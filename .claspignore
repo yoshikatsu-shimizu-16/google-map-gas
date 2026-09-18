@@ -1,3 +1,9 @@
 **/**
-!Code.js
+!docs/Overview.js
+!lib/catalog/PlaceTypeCatalog.js
+!lib/grid/GridList.js
+!lib/api/PlacesApiClient.js
+!lib/crawler/Crawler.js
+!lib/trigger/Triggers.js
+!lib/maintenance/Maintenance.js
 !appsscript.json
