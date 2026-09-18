@@ -8,23 +8,28 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 
 ## ファイル構成
 
-本体スクリプトは責務ごとに `lib/` 配下のディレクトリへ分割しています。GAS は同一プロジェクト
-内の全ファイルが単一のグローバルスコープに結合されるため、この分割はモジュールとしての依存
-分離ではなく、あくまで人間が読むための整理です。パス中の `/` はそのまま GAS 側のファイル名
-になり、Apps Script エディタのサイドバーがフォルダのように階層表示します。
+**リポジトリ直下の `.js` は、GASの「実行」メニューやトリガーから直接実行するエントリー
+ポイントです。** それ以外の実装の詳細(内部ヘルパー・定数)は `lib/` 配下に責務ごとの
+ディレクトリで整理しています。GAS は同一プロジェクト内の全ファイルが単一のグローバル
+スコープに結合されるため、この分割はモジュールとしての依存分離ではなく、あくまで人間が
+読むための整理です。`lib/` のパス中の `/` はそのまま GAS 側のファイル名になり、Apps
+Script エディタのサイドバーがフォルダのように階層表示します。
 
-| パス | 責務 |
-|---|---|
-| `docs/Overview.js` | プロジェクト全体の設計意図(ワークフロー全体像・密集エリア対策・月間APIコール上限の理由) |
-| `lib/catalog/PlaceTypeCatalog.js` | 検索対象 Place Type のカタログ定義(頻度別4グループ) |
-| `lib/grid/GridList.js` | 「グリッド一覧」シートの生成・スキーマ管理・座標ジオメトリ |
-| `lib/api/PlacesApiClient.js` | Places API (New) 呼び出しと月間APIコール上限の自前管理 |
-| `lib/crawler/Crawler.js` | クロール実行本体(メインワークフロー) |
-| `lib/trigger/Triggers.js` | 時間主導トリガーの作成・確認 |
-| `lib/maintenance/Maintenance.js` | データ初期化などの運用ユーティリティ |
-| `appsscript.json` | GASプロジェクトのマニフェスト(タイムゾーン・実行環境など) |
-| `.clasp.json.example` | `clasp` 用設定のひな形(実際の `.clasp.json` は各自で作成し、Gitには含めません) |
-| `.claspignore` | `clasp push` 時にアップロードするファイルを上記7つの `.js` と `appsscript.json` のみに限定する設定 |
+| パス | 種別 | 内容 |
+|---|---|---|
+| `generateGridList.js` | エントリーポイント | 対象エリアをグリッド分割し「グリッド一覧」シートを作成 |
+| `crawlAllGrids.js` | エントリーポイント | グリッド巡回・店舗検索・「全飲食店データ」への書き込み |
+| `triggers.js` | エントリーポイント | `crawlAllGrids` の日次トリガーの作成・確認 |
+| `checkMonthlyApiUsage.js` | エントリーポイント | 今月のAPIコール数の確認(動作確認用) |
+| `resetRestaurantData.js` | エントリーポイント | 「全飲食店データ」シートのデータ行を全削除(運用ユーティリティ) |
+| `lib/grid/GridHelpers.js` | 内部ヘルパー | グリッドのスキーマ移行・密集時の子グリッド生成・座標ジオメトリ |
+| `lib/api/PlacesApiClient.js` | 内部ヘルパー | Places API (New) 呼び出しと月間APIコール上限の自前管理 |
+| `lib/crawler/CrawlerHelpers.js` | 内部ヘルパー | `crawlAllGrids` が使う配列分割・シート追記処理 |
+| `lib/catalog/PlaceTypeCatalog.js` | データ | 検索対象 Place Type のカタログ定義(頻度別4グループ) |
+| `docs/Overview.js` | ドキュメント | プロジェクト全体の設計意図(ワークフロー全体像・密集エリア対策・月間APIコール上限の理由) |
+| `appsscript.json` | 設定 | GASプロジェクトのマニフェスト(タイムゾーン・実行環境など) |
+| `.clasp.json.example` | 設定 | `clasp` 用設定のひな形(実際の `.clasp.json` は各自で作成し、Gitには含めません) |
+| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記11個の `.js` と `appsscript.json` のみに限定する設定 |
 
 ## Google Drive 上の Apps Script プロジェクトとの接続方法
 
@@ -80,8 +85,8 @@ npx clasp create --type standalone --title "店舗情報取得" --rootDir .
 
 ### 5. ローカルの変更を Drive(Apps Script)に反映する
 
-このリポジトリで `lib/` 配下や `appsscript.json` を編集したら、コミット後に以下で
-Apps Script プロジェクト側へ反映します。
+このリポジトリでルート直下の `.js` / `lib/` 配下 / `appsscript.json` を編集したら、
+コミット後に以下で Apps Script プロジェクト側へ反映します。
 
 ```bash
 npm run push
@@ -106,12 +111,12 @@ GASの「実行」メニューやトリガー設定画面に並ぶ関数のう�
 
 | 関数名 | ファイル | 種別 | 用途 | 備考 |
 |---|---|---|---|---|
-| `generateGridList` | `lib/grid/GridList.js` | 手動実行 | 対象エリアをグリッド分割し「グリッド一覧」シートを作成 | 再実行すると処理状況(進捗)がリセットされる |
-| `crawlAllGrids` | `lib/crawler/Crawler.js` | トリガー対象(手動再実行も可) | グリッド巡回・店舗検索・「全飲食店データ」への書き込み | 日次3時台の自動トリガー対象。関数名は変更禁止(トリガーが文字列で参照) |
-| `createDailyTrigger` | `lib/trigger/Triggers.js` | 手動実行(初回のみ) | `crawlAllGrids` の日次トリガーを設定 | 何度実行しても重複作成されない |
-| `listTriggers` | `lib/trigger/Triggers.js` | 確認用 | 現在設定されているトリガー一覧をログ出力 | 副作用なし |
-| `checkMonthlyApiUsage` | `lib/api/PlacesApiClient.js` | 確認用 | 今月のAPIコール数をログ出力 | 副作用なし |
-| `resetRestaurantData` | `lib/maintenance/Maintenance.js` | 手動実行(初回・データ再取得時のみ) | 「全飲食店データ」シートのデータ行を全削除 | データ消去を伴うため実行前に要確認 |
+| `generateGridList` | `generateGridList.js` | 手動実行 | 対象エリアをグリッド分割し「グリッド一覧」シートを作成 | 再実行すると処理状況(進捗)がリセットされる |
+| `crawlAllGrids` | `crawlAllGrids.js` | トリガー対象(手動再実行も可) | グリッド巡回・店舗検索・「全飲食店データ」への書き込み | 日次3時台の自動トリガー対象。関数名は変更禁止(トリガーが文字列で参照) |
+| `createDailyTrigger` | `triggers.js` | 手動実行(初回のみ) | `crawlAllGrids` の日次トリガーを設定 | 何度実行しても重複作成されない |
+| `listTriggers` | `triggers.js` | 確認用 | 現在設定されているトリガー一覧をログ出力 | 副作用なし |
+| `checkMonthlyApiUsage` | `checkMonthlyApiUsage.js` | 確認用 | 今月のAPIコール数をログ出力 | 副作用なし |
+| `resetRestaurantData` | `resetRestaurantData.js` | 手動実行(初回・データ再取得時のみ) | 「全飲食店データ」シートのデータ行を全削除 | データ消去を伴うため実行前に要確認 |
 
 ## 実行順序(初回セットアップ)
 

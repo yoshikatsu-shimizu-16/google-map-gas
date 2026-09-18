@@ -1,9 +1,12 @@
 **/**
+!generateGridList.js
+!crawlAllGrids.js
+!triggers.js
+!checkMonthlyApiUsage.js
+!resetRestaurantData.js
 !docs/Overview.js
 !lib/catalog/PlaceTypeCatalog.js
-!lib/grid/GridList.js
+!lib/grid/GridHelpers.js
 !lib/api/PlacesApiClient.js
-!lib/crawler/Crawler.js
-!lib/trigger/Triggers.js
-!lib/maintenance/Maintenance.js
+!lib/crawler/CrawlerHelpers.js
 !appsscript.json
