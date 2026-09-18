@@ -1,9 +1,9 @@
 **/**
-!generateGridList.js
-!crawlAllGrids.js
-!triggers.js
-!checkMonthlyApiUsage.js
-!resetRestaurantData.js
+!entrypoints/generateGridList.js
+!entrypoints/crawlAllGrids.js
+!entrypoints/triggers.js
+!entrypoints/checkMonthlyApiUsage.js
+!entrypoints/resetRestaurantData.js
 !docs/Overview.js
 !lib/catalog/PlaceTypeCatalog.js
 !lib/grid/GridHelpers.js

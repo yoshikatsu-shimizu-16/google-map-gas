@@ -8,20 +8,23 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 
 ## ファイル構成
 
-**リポジトリ直下の `.js` は、GASの「実行」メニューやトリガーから直接実行するエントリー
-ポイントです。** それ以外の実装の詳細(内部ヘルパー・定数)は `lib/` 配下に責務ごとの
-ディレクトリで整理しています。GAS は同一プロジェクト内の全ファイルが単一のグローバル
-スコープに結合されるため、この分割はモジュールとしての依存分離ではなく、あくまで人間が
-読むための整理です。`lib/` のパス中の `/` はそのまま GAS 側のファイル名になり、Apps
-Script エディタのサイドバーがフォルダのように階層表示します。
+本体スクリプトはリポジトリ直下ではなく、3つのディレクトリに分けています。GAS は同一
+プロジェクト内の全ファイルが単一のグローバルスコープに結合されるため、この分割はモジュール
+としての依存分離ではなく、あくまで人間が読むための整理です。パス中の `/` はそのまま GAS
+側のファイル名になり、Apps Script エディタのサイドバーがフォルダのように階層表示します。
+
+- **`entrypoints/`** — GASの「実行」メニューやトリガーから直接実行するエントリーポイント。
+  まずここを見れば「実行できるもの」が分かります。
+- **`lib/`** — エントリーポイントが使う内部ヘルパー・定数(責務ごとのサブディレクトリ)。
+- **`docs/`** — プロジェクト全体の設計意図(コードではなく説明コメントのみ)。
 
 | パス | 種別 | 内容 |
 |---|---|---|
-| `generateGridList.js` | エントリーポイント | 対象エリアをグリッド分割し「グリッド一覧」シートを作成 |
-| `crawlAllGrids.js` | エントリーポイント | グリッド巡回・店舗検索・「全飲食店データ」への書き込み |
-| `triggers.js` | エントリーポイント | `crawlAllGrids` の日次トリガーの作成・確認 |
-| `checkMonthlyApiUsage.js` | エントリーポイント | 今月のAPIコール数の確認(動作確認用) |
-| `resetRestaurantData.js` | エントリーポイント | 「全飲食店データ」シートのデータ行を全削除(運用ユーティリティ) |
+| `entrypoints/generateGridList.js` | エントリーポイント | 対象エリアをグリッド分割し「グリッド一覧」シートを作成 |
+| `entrypoints/crawlAllGrids.js` | エントリーポイント | グリッド巡回・店舗検索・「全飲食店データ」への書き込み |
+| `entrypoints/triggers.js` | エントリーポイント | `crawlAllGrids` の日次トリガーの作成・確認 |
+| `entrypoints/checkMonthlyApiUsage.js` | エントリーポイント | 今月のAPIコール数の確認(動作確認用) |
+| `entrypoints/resetRestaurantData.js` | エントリーポイント | 「全飲食店データ」シートのデータ行を全削除(運用ユーティリティ) |
 | `lib/grid/GridHelpers.js` | 内部ヘルパー | グリッドのスキーマ移行・密集時の子グリッド生成・座標ジオメトリ |
 | `lib/api/PlacesApiClient.js` | 内部ヘルパー | Places API (New) 呼び出しと月間APIコール上限の自前管理 |
 | `lib/crawler/CrawlerHelpers.js` | 内部ヘルパー | `crawlAllGrids` が使う配列分割・シート追記処理 |
@@ -85,7 +88,7 @@ npx clasp create --type standalone --title "店舗情報取得" --rootDir .
 
 ### 5. ローカルの変更を Drive(Apps Script)に反映する
 
-このリポジトリでルート直下の `.js` / `lib/` 配下 / `appsscript.json` を編集したら、
+このリポジトリで `entrypoints/` / `lib/` 配下 / `appsscript.json` を編集したら、
 コミット後に以下で Apps Script プロジェクト側へ反映します。
 
 ```bash
@@ -111,12 +114,12 @@ GASの「実行」メニューやトリガー設定画面に並ぶ関数のう�
 
 | 関数名 | ファイル | 種別 | 用途 | 備考 |
 |---|---|---|---|---|
-| `generateGridList` | `generateGridList.js` | 手動実行 | 対象エリアをグリッド分割し「グリッド一覧」シートを作成 | 再実行すると処理状況(進捗)がリセットされる |
-| `crawlAllGrids` | `crawlAllGrids.js` | トリガー対象(手動再実行も可) | グリッド巡回・店舗検索・「全飲食店データ」への書き込み | 日次3時台の自動トリガー対象。関数名は変更禁止(トリガーが文字列で参照) |
-| `createDailyTrigger` | `triggers.js` | 手動実行(初回のみ) | `crawlAllGrids` の日次トリガーを設定 | 何度実行しても重複作成されない |
-| `listTriggers` | `triggers.js` | 確認用 | 現在設定されているトリガー一覧をログ出力 | 副作用なし |
-| `checkMonthlyApiUsage` | `checkMonthlyApiUsage.js` | 確認用 | 今月のAPIコール数をログ出力 | 副作用なし |
-| `resetRestaurantData` | `resetRestaurantData.js` | 手動実行(初回・データ再取得時のみ) | 「全飲食店データ」シートのデータ行を全削除 | データ消去を伴うため実行前に要確認 |
+| `generateGridList` | `entrypoints/generateGridList.js` | 手動実行 | 対象エリアをグリッド分割し「グリッド一覧」シートを作成 | 再実行すると処理状況(進捗)がリセットされる |
+| `crawlAllGrids` | `entrypoints/crawlAllGrids.js` | トリガー対象(手動再実行も可) | グリッド巡回・店舗検索・「全飲食店データ」への書き込み | 日次3時台の自動トリガー対象。関数名は変更禁止(トリガーが文字列で参照) |
+| `createDailyTrigger` | `entrypoints/triggers.js` | 手動実行(初回のみ) | `crawlAllGrids` の日次トリガーを設定 | 何度実行しても重複作成されない |
+| `listTriggers` | `entrypoints/triggers.js` | 確認用 | 現在設定されているトリガー一覧をログ出力 | 副作用なし |
+| `checkMonthlyApiUsage` | `entrypoints/checkMonthlyApiUsage.js` | 確認用 | 今月のAPIコール数をログ出力 | 副作用なし |
+| `resetRestaurantData` | `entrypoints/resetRestaurantData.js` | 手動実行(初回・データ再取得時のみ) | 「全飲食店データ」シートのデータ行を全削除 | データ消去を伴うため実行前に要確認 |
 
 ## 実行順序(初回セットアップ)
 
