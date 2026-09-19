@@ -185,6 +185,10 @@ console.log('\n[4] HP種別の判定(classifyWebsite)');
   [undefined, 'なし', ''],
   ['https://www.instagram.com/tenpo_a/', 'SNSのみ', 'instagram.com'],
   ['https://ja-jp.facebook.com/tenpo_b/', 'SNSのみ', 'ja-jp.facebook.com'],
+  // 短縮ドメインは本体ドメインのサブドメインではないため、個別に登録しないと自社HPに倒れる。
+  // lin.ee は LINE 公式アカウントの標準的なリンク形式で、拾いたい層がそのまま漏れる。
+  ['https://lin.ee/AbCdEfG', 'SNSのみ', 'lin.ee'],
+  ['https://fb.me/tenpo_d', 'SNSのみ', 'fb.me'],
   ['https://manisancurry.saidomenu.com/', 'グルメポータル', 'manisancurry.saidomenu.com'],
   ['https://pkg.navitime.co.jp/matsuyafoods/spot/detail?code=0000000792', 'グルメポータル', 'pkg.navitime.co.jp'],
   ['https://sites.google.com/view/tenpo-c', '簡易ページ', 'sites.google.com'],
