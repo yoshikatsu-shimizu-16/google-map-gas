@@ -25,14 +25,18 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `entrypoints/triggers.js` | エントリーポイント | `crawlAllGrids` の日次トリガーの作成・確認 |
 | `entrypoints/checkMonthlyApiUsage.js` | エントリーポイント | 今月のAPIコール数の確認(動作確認用) |
 | `entrypoints/resetRestaurantData.js` | エントリーポイント | 「全飲食店データ」シートのデータ行を全削除(運用ユーティリティ) |
-| `lib/grid/GridHelpers.js` | 内部ヘルパー | グリッドのスキーマ移行・密集時の子グリッド生成・座標ジオメトリ |
+| `lib/grid/TargetArea.js` | 内部ヘルパー | 対象エリアの範囲定数と、セルが探索対象に含まれるかの判定 |
+| `lib/grid/GridGeometry.js` | 内部ヘルパー | 度⇄メートル変換とセルの外接円半径の導出(純関数のみ) |
+| `lib/grid/GridSubdivision.js` | 内部ヘルパー | 密集セルを4象限に等分する四分木分割 |
+| `lib/grid/GridSchemaMigration.js` | 内部ヘルパー | 「グリッド一覧」シートの列構成と、進捗を保持したままのスキーマ移行 |
 | `lib/api/PlacesApiClient.js` | 内部ヘルパー | Places API (New) 呼び出しと月間APIコール上限の自前管理 |
-| `lib/crawler/CrawlerHelpers.js` | 内部ヘルパー | `crawlAllGrids` が使う配列分割・シート追記処理 |
-| `lib/catalog/PlaceTypeCatalog.js` | データ | 検索対象 Place Type のカタログ定義(頻度別4グループ) |
+| `lib/api/PlaceSearchFieldMask.js` | 内部ヘルパー | searchNearby で取得するフィールドの指定(課金SKUの段を左右する) |
+| `lib/crawler/PlaceRowWriter.js` | 内部ヘルパー | 「全飲食店データ」への一括書き込みと Place ID による重複除去 |
+| `lib/catalog/PlaceTypeCatalog.js` | データ | 検索対象 Place Type のカタログ定義(頻度別4グループ)と密集時のタイプ分割 |
 | `docs/Overview.js` | ドキュメント | プロジェクト全体の設計意図(ワークフロー全体像・密集エリア対策・月間APIコール上限の理由) |
 | `appsscript.json` | 設定 | GASプロジェクトのマニフェスト(タイムゾーン・実行環境など) |
 | `.clasp.json.example` | 設定 | `clasp` 用設定のひな形(実際の `.clasp.json` は各自で作成し、Gitには含めません) |
-| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記11個の `.js` と `appsscript.json` のみに限定する設定 |
+| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記15個の `.js` と `appsscript.json` のみに限定する設定 |
 
 ## Google Drive 上の Apps Script プロジェクトとの接続方法
 
@@ -131,3 +135,47 @@ GASの「実行」メニューやトリガー設定画面に並ぶ関数のう�
 上記以外に、動作確認・運用時に個別実行する関数は上の「エントリーポイント一覧」を参照して
 ください。詳細な設計意図(密集エリア対策・月間APIコール上限など)は `docs/Overview.js` を
 参照してください。
+
+## ローカル検証
+
+GAS には型チェックもコンパイルもなく、識別子の取り違えはデプロイして実行するまで
+分かりません。`tools/` に2つの検証スクリプトを置いており、**APIコールもスプレッドシートも
+使わずに**手元で実行できます。`tools/` は `.claspignore` の対象外なので `clasp push`
+では送信されません。
+
+```bash
+node tools/verifyGridGeometry.js
+```
+
+検索半径の導出、旧スキーマからの逆算、四分木分割がセル矩形を漏れなく覆うことを
+モンテカルロ法(30万点)で確認します。旧実装が親円の約4.5%を覆えていなかったことも
+対照として出力するため、分割ロジックを変更した際のリグレッション検知に使えます。
+
+```bash
+node tools/verifyCrawlerOnStubs.js
+```
+
+`.claspignore` のホワイトリスト全ファイルを GAS と同じ単一グローバルスコープに結合し、
+スタブ上で `generateGridList` → `crawlAllGrids` を通します。処理状況の遷移、子グリッドの
+生成、Place ID の重複除去、コール数の計測、旧スキーマからの移行(進捗の保持と冪等性)を
+確認します。**デプロイ前にこちらを通しておくと、関数名の取り違えを実機で踏まずに済みます。**
+
+## スキーマ移行とロールバック
+
+`crawlAllGrids` は起動時に `ensureGridSchemaMigrated` を呼び、「グリッド一覧」シートを
+最新のスキーマ(8列)へ自動で移行します。既存の値は書き換えないため、**処理状況(進捗)は
+保持されます**。移行は冪等で、何度実行しても結果は変わりません。
+
+| 列 | 内容 | 追加時期 |
+|---|---|---|
+| A〜E | グリッドID / 中心緯度 / 中心経度 / 半径(m) / 処理状況 | 初期 |
+| F〜G | 階層 / 親グリッドID | 密集エリアの自動細分化に対応した際 |
+| H | セルサイズ(度) | 半径を導出値にし、四分木分割の基準を持たせた際 |
+
+「半径(m)」はグリッド生成時に確定した実際の検索半径、「セルサイズ(度)」はそのセルが
+担当する領域の広さです。四分木分割は後者を基準にするため、半径だけを手で書き換えても
+分割の粒度には反映されません。
+
+古いコードに戻す場合は `clasp push` 前のコミットに戻して再 push します。ただし
+**シートに追加されたH列と新しいステータスは残る**ため、旧コードで動かすときは
+H列を削除し、`処理済み(A=0のため省略)` を `未処理` に一括置換してください。

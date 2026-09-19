@@ -6,7 +6,11 @@
 !entrypoints/resetRestaurantData.js
 !docs/Overview.js
 !lib/catalog/PlaceTypeCatalog.js
-!lib/grid/GridHelpers.js
+!lib/grid/TargetArea.js
+!lib/grid/GridGeometry.js
+!lib/grid/GridSubdivision.js
+!lib/grid/GridSchemaMigration.js
 !lib/api/PlacesApiClient.js
-!lib/crawler/CrawlerHelpers.js
+!lib/api/PlaceSearchFieldMask.js
+!lib/crawler/PlaceRowWriter.js
 !appsscript.json
