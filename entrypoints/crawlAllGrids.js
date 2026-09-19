@@ -4,17 +4,23 @@
  * Places API (New) の searchNearby エンドポイントで店舗を検索して
  * 「全飲食店データ」シートに書き込む。
  *
- * 密集エリア対策(20件の壁への対応):
- *   1. 頻度別4グループ(A/B/C/D、BASE_TYPE_GROUPS)で検索する。
- *      ただしグループA(頻出39種)が0件だったセルは、田畑・河川・住宅のみで
- *      飲食店が存在しないとみなし、残りB/C/Dの3回を省略する。
- *   2. いずれかのグループがちょうど20件(maxResultCount)返ってきた場合、切り捨ての疑いが
- *      あるため、そのグループだけを小グループに細分化して追加検索する(タイプ分割)。
- *      密集判定の主犯はほぼ常にグループA(頻出ジャンル)。
- *   3. タイプ分割してもなお20件ちょうど返ってくる小グループがあれば、
+ * 検索戦略(SearchStrategyMode.js で切り替え。既定は type_groups):
+ *   - type_groups(旧方式): 頻度別4グループ(A/B/C/D、BASE_TYPE_GROUPS)で無条件に
+ *     検索する(lib/crawler/TypeGroupCellSearch.js)。
+ *   - probe(新方式): まずプローブ集合(PLACE_TYPE_PROBE_SET)で1回だけ検索し、
+ *     20件未満ならそのセルを確定する。20件ちょうど(飽和の疑い)のときだけ
+ *     type_groups に完全フォールバックする(lib/crawler/ProbeFirstCellSearch.js)。
+ *     飽和セルの挙動は type_groups と完全に同一になり、プローブ1コールが
+ *     上乗せされるだけ。
+ *
+ * 密集エリア対策(20件の壁への対応、いずれの戦略でも共通):
+ *   1. いずれかのグループ(またはプローブ)がちょうど20件(maxResultCount)返ってきた
+ *      場合、切り捨ての疑いがあるため、そのグループだけを小グループに細分化して
+ *      追加検索する(タイプ分割)。密集判定の主犯はほぼ常にグループA(頻出ジャンル)。
+ *   2. タイプ分割してもなお20件ちょうど返ってくる小グループがあれば、
  *      階層が MAX_TIER 未満の場合に限り、セル矩形を4象限に等分した子グリッドを
  *      生成して「グリッド一覧」に追加する(次回実行時に自動的に処理される)。
- *   4. 階層が MAX_TIER に達してもまだ20件出る場合は、これ以上の自動化は
+ *   3. 階層が MAX_TIER に達してもまだ20件出る場合は、これ以上の自動化は
  *      行わず「要確認(上限到達)」のステータスを付けて人間の確認に委ねる。
  *
  * その他の特徴:
@@ -27,14 +33,17 @@
  *     (checkAndIncrementApiQuota)を検知した場合は、個別グリッドのエラーとして無視せず、
  *     ループ全体を即座に中断する。このとき「処理状況」は更新されないため、
  *     翌日・翌月以降の再実行でそのグリッドから再開される。
- *   - APIコールの内訳(どのグループで何回・何回飽和したか、階層別の消費)をログに出す。
- *     タイプカタログの見直しや格子方式の変更を判断するための計測値。
+ *   - APIコールの内訳(どのグループで何回・何回飽和したか、階層別の消費、プローブの
+ *     内訳)をログに出す。タイプカタログの見直しや格子方式の変更を判断するための計測値。
  *
  * @returns {void}
  */
 function crawlAllGrids() {
   const startTime = new Date().getTime();
   const MAX_RUNTIME_MS = 4.5 * 60 * 1000; // GASの実行時間上限(6分)に対する安全マージン
+
+  const strategy = getSearchStrategy();
+  Logger.log('[検索方式] ' + describeSearchStrategy(strategy));
 
   const scriptProps = PropertiesService.getScriptProperties();
   const apiKey = scriptProps.getProperty('GOOGLE_MAPS_API_KEY');
@@ -86,11 +95,48 @@ function crawlAllGrids() {
     baseGroupSaturated: [0, 0, 0, 0],  // うち20件に達した回数
     typeSplitCalls: 0,                 // タイプ分割で消費したコール数
     callsByTier: {},                   // 階層別のコール数
-    emptyByGroupA: 0                   // グループAが0件でB/C/Dを省略したセル数
+    emptyByGroupA: 0,                  // グループAが0件でB/C/Dを省略したセル数
+    probeCalls: 0,                     // プローブ集合でのコール数
+    probeEmpty: 0,                     // プローブが0件だったセル数
+    probeResolved: 0,                  // プローブ1コールで確定したセル数(0件を含む)
+    probeSaturated: 0,                 // プローブが20件で type_groups にフォールバックした回数
+    uncoveredPlaces: 0                 // プローブ集合で被覆されなかった新規取得店舗数
+  };
+
+  const GROUP_LABEL_INDEX = { A: 0, B: 1, C: 2, D: 3 };
+
+  /**
+   * 1セル分の callLog(実際にHTTPリクエストが飛んだ内訳)を stats に畳み込む。
+   * 自前の月間上限で手前で止めた分を数えると実績値がずれるため、requestSent の
+   * エントリだけを計上する(このチェックは callSearchNearby の戻り値に由来する)。
+   * @param {Array<{label: string, requestSent: boolean, placeCount: number}>} callLog
+   * @param {number} tier - このセルの階層(階層別コール数の集計キー)
+   */
+  const foldCallLog = function(callLog, tier) {
+    callLog.forEach(function(entry) {
+      if (!entry.requestSent) return;
+      stats.totalCalls++;
+      stats.callsByTier[tier] = (stats.callsByTier[tier] || 0) + 1;
+      if (stats.totalCalls % 20 === 0) {
+        Logger.log('進捗: 現在 ' + stats.totalCalls + ' 回コール済み');
+      }
+
+      if (entry.label === 'split') {
+        stats.typeSplitCalls++;
+      } else if (entry.label === 'probe') {
+        stats.probeCalls++;
+      } else {
+        const idx = GROUP_LABEL_INDEX[entry.label];
+        if (idx !== undefined) {
+          stats.baseGroupCalls[idx]++;
+          if (entry.placeCount >= 20) stats.baseGroupSaturated[idx]++;
+        }
+      }
+    });
   };
 
   const DONE_STATUSES = [
-    '処理済み', '処理済み(A=0のため省略)',
+    '処理済み', '処理済み(A=0のため省略)', '処理済み(プローブ)',
     '密集(タイプ分割済み)', '密集(分割済み)', '要確認(上限到達)'
   ];
 
@@ -122,93 +168,29 @@ function crawlAllGrids() {
     const tier = row[5] || 0;
     const cellSizeDeg = row[7] || GRID_STEP;
 
-    /**
-     * 実際にHTTPリクエストが飛んだ場合だけコール数を数える計測用のフック。
-     * 自前の月間上限で手前で止めた分を数えると、実績値がずれてしまうため。
-     * @param {{requestSent: boolean}} result - callSearchNearby の戻り値
-     */
-    const countCall = function(result) {
-      if (!result.requestSent) return;
-      stats.totalCalls++;
-      stats.callsByTier[tier] = (stats.callsByTier[tier] || 0) + 1;
-      if (stats.totalCalls % 20 === 0) {
-        Logger.log('進捗: 現在 ' + stats.totalCalls + ' 回コール済み');
-      }
-    };
+    const search = { apiKey: apiKey, fieldMask: PLACE_SEARCH_FIELD_MASK, writer: writer };
+    const cell = { gridId: gridId, lat: lat, lng: lng, radius: radius };
+    const result = strategy === SEARCH_STRATEGY_PROBE
+      ? searchCellByProbeSet(search, cell)
+      : searchCellByTypeGroups(search, cell);
 
-    let anyBaseGroupSaturated = false; // 4グループのうち、いずれかが20件に達したか
-    let anyFineGroupSaturated = false; // タイプ分割してもなお20件出たグループがあるか
-    let gridHadFailure = false;
-    let emptyByGroupA = false;
-
-    // --- ステップ1: 頻度別グループ(A/B/C/D)で検索 ---
-    for (let g = 0; g < BASE_TYPE_GROUPS.length; g++) {
-      const groupTypes = BASE_TYPE_GROUPS[g];
-      const groupResult = callSearchNearby(apiKey, PLACE_SEARCH_FIELD_MASK, groupTypes, lat, lng, radius);
-      if (groupResult.requestSent) stats.baseGroupCalls[g]++;
-      countCall(groupResult);
-
-      if (!groupResult.ok) {
-        if (groupResult.quotaExceeded) {
-          Logger.log('利用上限に達したと思われるため、処理を中断します。');
-          Logger.log('エラー内容: ' + groupResult.errorText);
-          quotaExceeded = true;
-          break;
-        }
-        Logger.log('グリッド ' + gridId + ' のグループ検索でエラー: ' + groupResult.errorText);
-        gridHadFailure = true;
-        continue;
-      }
-
-      groupResult.places.forEach(function(place) {
-        if (writer.add(place)) newRowsCount++;
-      });
-
-      // グループA(頻出39種)が0件なら、このセルには飲食店が存在しないとみなし
-      // B/C/Dの3コールを省略する。稀タイプだけが存在するセルを取りこぼす可能性が
-      // ゼロではないため、後から再掃討できるよう専用ステータスで区別する。
-      if (g === 0 && groupResult.places.length === 0) {
-        emptyByGroupA = true;
-        stats.emptyByGroupA++;
-        break;
-      }
-
-      if (groupResult.places.length < 20) continue; // このグループは20件未満なので分割不要
-      anyBaseGroupSaturated = true;
-      stats.baseGroupSaturated[g]++;
-
-      // --- ステップ2: 20件に達したグループだけ、さらに細分化して検索(タイプ分割) ---
-      const subGroups = splitTypeGroupForDenseArea(groupTypes);
-      let thisGroupStillSaturated = false;
-      for (let s = 0; s < subGroups.length; s++) {
-        const subResult = callSearchNearby(apiKey, PLACE_SEARCH_FIELD_MASK, subGroups[s], lat, lng, radius);
-        if (subResult.requestSent) stats.typeSplitCalls++;
-        countCall(subResult);
-        if (!subResult.ok) {
-          if (subResult.quotaExceeded) {
-            Logger.log('利用上限に達したと思われるため、処理を中断します。');
-            Logger.log('エラー内容: ' + subResult.errorText);
-            quotaExceeded = true;
-            break;
-          }
-          Logger.log('グリッド ' + gridId + ' のタイプ分割検索でエラー: ' + subResult.errorText);
-          continue;
-        }
-        subResult.places.forEach(function(place) {
-          if (writer.add(place)) newRowsCount++;
-        });
-        if (subResult.places.length >= 20) thisGroupStillSaturated = true;
-      }
-      if (quotaExceeded) break;
-      if (thisGroupStillSaturated) anyFineGroupSaturated = true;
-    }
+    foldCallLog(result.callLog, tier);
+    newRowsCount += result.newRows;
+    stats.uncoveredPlaces += result.uncoveredPlaces.length;
+    if (result.emptyByGroupA) stats.emptyByGroupA++;
+    if (result.probeResolved) stats.probeResolved++;
+    if (result.probeSaturated) stats.probeSaturated++;
+    if (result.probeEmpty) stats.probeEmpty++;
 
     // 中断する場合も、それまでに集めた行は失わないよう先に書き出す
     writer.flush();
-    if (quotaExceeded) break;
+    if (result.quotaExceeded) {
+      quotaExceeded = true;
+      break;
+    }
 
-    // --- ステップ3: タイプ分割してもまだ20件出るグループがある → セルの四分木分割 ---
-    if (anyFineGroupSaturated) {
+    if (result.fineSaturated) {
+      // --- タイプ分割してもまだ20件出るグループがある → セルの四分木分割 ---
       if (tier < MAX_TIER) {
         nextGridId = spawnChildGrids(gridSheet, gridId, lat, lng, cellSizeDeg, tier, nextGridId);
         gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('密集(分割済み)');
@@ -218,12 +200,15 @@ function crawlAllGrids() {
         gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('要確認(上限到達)');
         needsReviewCount++;
       }
-    } else if (gridHadFailure) {
+    } else if (result.hadFailure) {
       gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('エラー');
-    } else if (emptyByGroupA) {
+    } else if (result.emptyByGroupA) {
       gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('処理済み(A=0のため省略)');
       processedCount++;
-    } else if (anyBaseGroupSaturated) {
+    } else if (result.probeResolved) {
+      gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('処理済み(プローブ)');
+      processedCount++;
+    } else if (result.baseSaturated) {
       gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('密集(タイプ分割済み)');
       processedCount++;
     } else {
@@ -257,6 +242,13 @@ function crawlAllGrids() {
     ' / タイプ分割: ' + stats.typeSplitCalls +
     ' / 階層別: ' + JSON.stringify(stats.callsByTier) +
     ' / グループA=0件で省略したセル: ' + stats.emptyByGroupA
+  );
+  Logger.log(
+    '[プローブ内訳] コール: ' + stats.probeCalls +
+    ' / 0件: ' + stats.probeEmpty +
+    ' / 確定: ' + stats.probeResolved +
+    ' / 20件飽和: ' + stats.probeSaturated +
+    ' / 未被覆の店: ' + stats.uncoveredPlaces
   );
   if (quotaExceeded) {
     Logger.log('→ 利用上限により中断しました。上限がリセットされたら、同じ crawlAllGrids を再実行すれば続きから再開します。');

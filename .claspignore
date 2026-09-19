@@ -20,4 +20,7 @@
 !lib/catalog/PlaceTypeCoverageAnalysis.js
 !entrypoints/auditProbeSetCoverage.js
 !entrypoints/compareProbeSetWithTypeGroups.js
+!lib/crawler/SearchStrategyMode.js
+!lib/crawler/TypeGroupCellSearch.js
+!lib/crawler/ProbeFirstCellSearch.js
 !appsscript.json

@@ -49,6 +49,10 @@ const stub = installGasGlobals({
 });
 stub.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
 stub.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+// この[1]は「旧方式(type_groups)が無改変であること」の回帰テストと位置づける。
+// crawlAllGrids.js:145-204 を TypeGroupCellSearch.js へ移設した際のデグレ検知になるため、
+// 既定値に頼らず明示的に固定し、以下のアサート内容は一切変えない。
+stub.properties['SEARCH_STRATEGY'] = 'type_groups';
 
 const api = new Function(source + `
   return {
@@ -296,7 +300,131 @@ check('データ行0件でもヘッダーだけ移行できる',
   emptySheet.rows()[0].join('|') === api.PLACE_DATA_HEADERS.join('|'));
 
 // =====================================================================
-console.log('\n[6] フィルタ条件の保持と行容量(Issue #5)');
+console.log('\n[6] プローブ優先モード(SEARCH_STRATEGY=probe)');
+// =====================================================================
+// このセクション専用のフェイク: id を「中心座標とインデックス」だけから作る
+// (includedTypes には依存しない)。[1]のフェイクは id に includedTypes[0] を
+// 使っているため type_groups と probe とでモード間の id が変わってしまい、
+// 「同じセルなら同じ店が返る」ことの検証に使えない。ここでは同一セルに対して
+// type_groups / probe のどちらで検索しても物理的に同じ店が返る、という
+// 「プローブ1コールで取りこぼさない」ことのローカル側の主張を検証する。
+const SPARSE_CELL = { gridId: 101, lat: 35.80, lng: 139.95 };
+const EMPTY_CELL = { gridId: 102, lat: 35.79, lng: 139.94 };
+const DENSE_CELL = { gridId: 103, lat: 35.86, lng: 139.97 };
+// 被覆漏れ警告の検証専用: 密集(飽和)しつつ、types が point_of_interest/establishment
+// だけ(=プローブ集合で被覆されない)の店だけを返すセル。
+const DENSE_UNCOVERED_CELL = { gridId: 104, lat: 35.865, lng: 139.975 };
+
+const cellKey = function(lat, lng) { return lat.toFixed(5) + '_' + lng.toFixed(5); };
+const DENSE_KEY = cellKey(DENSE_CELL.lat, DENSE_CELL.lng);
+const DENSE_UNCOVERED_KEY = cellKey(DENSE_UNCOVERED_CELL.lat, DENSE_UNCOVERED_CELL.lng);
+const EMPTY_KEY = cellKey(EMPTY_CELL.lat, EMPTY_CELL.lng);
+
+const respondByCellOnly = function(body) {
+  const c = body.locationRestriction.circle.center;
+  const key = cellKey(c.latitude, c.longitude);
+  const isDense = key === DENSE_KEY || key === DENSE_UNCOVERED_KEY;
+  const isEmpty = key === EMPTY_KEY;
+  const count = isDense ? 20 : (isEmpty ? 0 : 3);
+  const places = [];
+  for (let i = 0; i < count; i++) {
+    places.push({
+      id: 'q_' + key + '_' + i,
+      displayName: { text: '店舗' + i },
+      formattedAddress: '住所',
+      location: { latitude: c.latitude, longitude: c.longitude },
+      types: key === DENSE_UNCOVERED_KEY ? ['point_of_interest', 'establishment'] : ['restaurant', 'food'],
+      websiteUri: '',
+      rating: 4.0,
+      userRatingCount: 10
+    });
+  }
+  return { places: places };
+};
+
+/** 指定したセル配列だけを持つ「グリッド一覧」シートを作る(階層0・未処理・8列の最新スキーマ)。 */
+const buildGridSheet = function(cells) {
+  const rows = [api.GRID_SHEET_HEADERS];
+  cells.forEach(function(cell) {
+    rows.push([cell.gridId, cell.lat, cell.lng, 700, '未処理', 0, '', api.GRID_STEP]);
+  });
+  return createFakeSheet(rows);
+};
+
+/**
+ * SEARCH_STRATEGY を指定して crawlAllGrids を1回実行する。
+ * installGasGlobals は呼ぶたびに global.Logger 等を差し替えるため、この関数の
+ * 呼び出しごとに独立したシート・ログ・コール数で計測できる。
+ * @param {string} strategy - 'type_groups' | 'probe'
+ * @param {Array<{gridId:number, lat:number, lng:number}>} cells
+ * @returns {{stub: Object, gridRows: Array[], dataRows: Array[]}}
+ */
+const runCrawlWithStrategy = function(strategy, cells) {
+  const s = installGasGlobals({ respondToSearch: respondByCellOnly });
+  s.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+  s.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+  s.properties['SEARCH_STRATEGY'] = strategy;
+  s.sheets['グリッド一覧'] = buildGridSheet(cells);
+  api.crawlAllGrids();
+  return {
+    stub: s,
+    gridRows: s.sheets['グリッド一覧'].rows(),
+    dataRows: s.sheets['全飲食店データ'].rows()
+  };
+};
+
+// --- 疎セル・空セルだけのグリッドで、処理状況とコール数を確認する ---
+const sparseRun = runCrawlWithStrategy('probe', [SPARSE_CELL, EMPTY_CELL]);
+const sparseStatuses = sparseRun.gridRows.slice(1).map(function(r) { return r[4]; });
+check('疎セルに「処理済み(プローブ)」が付く', sparseStatuses[0] === '処理済み(プローブ)', sparseStatuses[0]);
+check('空セルにも「処理済み(プローブ)」が付く(プローブは何も省略していないため0件と区別しない)',
+  sparseStatuses[1] === '処理済み(プローブ)', sparseStatuses[1]);
+check('疎セル・空セルとも1回のコールで確定する(2セルでコール数2)',
+  sparseRun.stub.requestCount() === 2, 'requestCount=' + sparseRun.stub.requestCount());
+
+const probeBreakdown = sparseRun.stub.logs.filter(function(l) { return l.indexOf('[プローブ内訳]') === 0; }).pop();
+check('[プローブ内訳]ログが出力される', !!probeBreakdown, probeBreakdown);
+
+// --- 密集セル: 旧モードと新モード(フォールバック経由)の子グリッド生成数が一致する ---
+const denseTypeGroups = runCrawlWithStrategy('type_groups', [DENSE_CELL]);
+const denseProbe = runCrawlWithStrategy('probe', [DENSE_CELL]);
+const countStatus = function(rows, status) {
+  return rows.slice(1).filter(function(r) { return r[4] === status; }).length;
+};
+check('密集セルの「密集(分割済み)」件数が旧モードと新モードで一致する(ともに1件)',
+  countStatus(denseTypeGroups.gridRows, '密集(分割済み)') === 1 &&
+  countStatus(denseProbe.gridRows, '密集(分割済み)') === 1,
+  'type_groups=' + countStatus(denseTypeGroups.gridRows, '密集(分割済み)') +
+  ' / probe=' + countStatus(denseProbe.gridRows, '密集(分割済み)'));
+
+// --- 計測コール数=実HTTPリクエスト数(密集セルのフォールバック込みでも成り立つこと) ---
+const probeSummary = denseProbe.stub.logs.filter(function(l) { return l.indexOf('APIコール回数:') !== -1; }).pop();
+const probeReported = probeSummary && Number(probeSummary.match(/APIコール回数: (\d+)/)[1]);
+check('プローブモードでも計測コール数が実際のHTTPリクエスト数と一致する(密集セルのフォールバック込み)',
+  probeReported === denseProbe.stub.requestCount(),
+  '計測=' + probeReported + ' / 実リクエスト=' + denseProbe.stub.requestCount());
+
+// --- 疎セル: 旧モードと新モードで取得する Place ID 集合が完全一致すること ---
+const sparseTypeGroups = runCrawlWithStrategy('type_groups', [SPARSE_CELL]);
+const sparseProbe = runCrawlWithStrategy('probe', [SPARSE_CELL]);
+const idSet = function(rows) {
+  return rows.slice(1).map(function(r) { return r[api.PLACE_ID_COLUMN - 1]; }).sort();
+};
+check('疎セルの取得Place ID集合が旧モードと新モードで一致する',
+  JSON.stringify(idSet(sparseTypeGroups.dataRows)) === JSON.stringify(idSet(sparseProbe.dataRows)),
+  'type_groups=' + JSON.stringify(idSet(sparseTypeGroups.dataRows)) +
+  ' / probe=' + JSON.stringify(idSet(sparseProbe.dataRows)));
+
+// --- 被覆漏れ警告: point_of_interest/establishment のみの店を返す密集セル ---
+const uncoveredRun = runCrawlWithStrategy('probe', [DENSE_UNCOVERED_CELL]);
+const warningLog = uncoveredRun.stub.logs.filter(function(l) { return l.indexOf('[被覆漏れ]') === 0; });
+check('プローブ集合で被覆されない店が新規取得されると警告ログが出る', warningLog.length > 0, warningLog.length + '件');
+const uncoveredSummary = uncoveredRun.stub.logs.filter(function(l) { return l.indexOf('[プローブ内訳]') === 0; }).pop();
+check('[プローブ内訳]ログの「未被覆の店」にも反映される(0件ではない)',
+  !!uncoveredSummary && uncoveredSummary.indexOf('未被覆の店: 0') === -1, uncoveredSummary);
+
+// =====================================================================
+console.log('\n[7] フィルタ条件の保持と行容量(Issue #5)');
 // =====================================================================
 // 旧実装は crawlAllGrids の末尾で毎回 remove() → createFilter() しており、
 // 運用者が設定した絞り込み条件(HP種別=なし / 評価>=3.8 等)が日次トリガーのたびに
