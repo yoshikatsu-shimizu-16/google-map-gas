@@ -12,5 +12,7 @@
 !lib/grid/GridSchemaMigration.js
 !lib/api/PlacesApiClient.js
 !lib/api/PlaceSearchFieldMask.js
+!lib/crawler/WebsiteCategory.js
 !lib/crawler/PlaceRowWriter.js
+!lib/crawler/PlaceDataSchemaMigration.js
 !appsscript.json

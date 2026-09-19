@@ -53,6 +53,7 @@ function crawlAllGrids() {
     dataSheet = spreadsheet.insertSheet('全飲食店データ');
     dataSheet.appendRow(PLACE_DATA_HEADERS);
   }
+  ensurePlaceDataSchemaMigrated(dataSheet); // 旧スキーマの場合、取得済みの店舗データを保持したまま列を組み替える
 
   const lastDataRow = dataSheet.getLastRow();
   const existingIds = new Set();

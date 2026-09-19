@@ -36,7 +36,12 @@ const stub = installGasGlobals({
         id: 'p_' + c.latitude.toFixed(5) + '_' + c.longitude.toFixed(5) + '_' + body.includedTypes[0] + '_' + i,
         displayName: { text: '店舗' + i },
         formattedAddress: '住所',
-        rating: 4.1
+        location: { latitude: c.latitude, longitude: c.longitude },
+        types: [body.includedTypes[0], 'restaurant', 'food'],
+        // 偶数番の店だけ Instagram を持たせ、HP種別が SNSのみ に倒れることを見る
+        websiteUri: i % 2 === 0 ? 'https://www.instagram.com/tenpo' + i + '/' : '',
+        rating: 4.1,
+        userRatingCount: 0
       });
     }
     return { places: places };
@@ -50,8 +55,12 @@ const api = new Function(source + `
     generateGridList: generateGridList,
     crawlAllGrids: crawlAllGrids,
     ensureGridSchemaMigrated: ensureGridSchemaMigrated,
+    ensurePlaceDataSchemaMigrated: ensurePlaceDataSchemaMigrated,
+    classifyWebsite: classifyWebsite,
     cellCoverRadiusMeters: cellCoverRadiusMeters,
     GRID_SHEET_HEADERS: GRID_SHEET_HEADERS,
+    PLACE_DATA_HEADERS: PLACE_DATA_HEADERS,
+    PLACE_ID_COLUMN: PLACE_ID_COLUMN,
     GRID_STEP: GRID_STEP,
     MAX_TIER: MAX_TIER
   };
@@ -82,7 +91,19 @@ check('子グリッドの半径が359m・セルサイズが0.005度',
   child && child[3] === 359 && child[7] === 0.005,
   child ? '半径=' + child[3] + 'm セルサイズ=' + child[7] + '度 親=' + child[6] : '子グリッドなし');
 
-const ids = data.slice(1).map(function(r) { return r[19]; });
+const placeCol = function(name) { return api.PLACE_DATA_HEADERS.indexOf(name); };
+check('新規取得行に緯度・経度・全タイプが入る',
+  data.slice(1).every(function(r) {
+    return typeof r[placeCol('緯度')] === 'number' && typeof r[placeCol('経度')] === 'number' &&
+      String(r[placeCol('全タイプ')]).indexOf('restaurant') !== -1;
+  }));
+check('新規取得行のHP種別が websiteUri から振り分けられる',
+  data.slice(1).some(function(r) { return r[placeCol('HP種別')] === 'SNSのみ'; }) &&
+  data.slice(1).some(function(r) { return r[placeCol('HP種別')] === 'なし'; }));
+check('評価件数0が空セルにならず0のまま残る',
+  data.slice(1).every(function(r) { return r[placeCol('評価件数')] === 0; }));
+
+const ids = data.slice(1).map(function(r) { return r[api.PLACE_ID_COLUMN - 1]; });
 check('Place ID が重複しない', ids.length === new Set(ids).size,
   (ids.length - new Set(ids).size) + '件の重複 / 総数' + ids.length);
 
@@ -153,6 +174,118 @@ check('旧ロジックのtier1行の階層がMAX_TIERに固定される',
 check('旧ロジックのtier2行の階層がMAX_TIERに固定される',
   rows[3][5] === api.MAX_TIER, '階層=' + rows[3][5] + ' (MAX_TIER=' + api.MAX_TIER + ')');
 check('tier0の親行は階層0のまま', rows[1][5] === 0, '階層=' + rows[1][5]);
+
+// =====================================================================
+console.log('\n[4] HP種別の判定(classifyWebsite)');
+// =====================================================================
+// 実際のシートに入っていた URL をそのまま使う。HPありの約3割が SNS だったため、
+// あり/なしの2値では営業リストとして使えないというのがこの列を足した理由。
+[
+  ['', 'なし', ''],
+  [undefined, 'なし', ''],
+  ['https://www.instagram.com/tenpo_a/', 'SNSのみ', 'instagram.com'],
+  ['https://ja-jp.facebook.com/tenpo_b/', 'SNSのみ', 'ja-jp.facebook.com'],
+  ['https://manisancurry.saidomenu.com/', 'グルメポータル', 'manisancurry.saidomenu.com'],
+  ['https://pkg.navitime.co.jp/matsuyafoods/spot/detail?code=0000000792', 'グルメポータル', 'pkg.navitime.co.jp'],
+  ['https://sites.google.com/view/tenpo-c', '簡易ページ', 'sites.google.com'],
+  ['https://shop.dennys.jp/map/21855/', '自社HP', 'shop.dennys.jp'],
+  ['https://notfacebook.com/', '自社HP', 'notfacebook.com']
+].forEach(function(c) {
+  const r = api.classifyWebsite(c[0]);
+  check('classifyWebsite(' + JSON.stringify(c[0]) + ') → ' + c[1],
+    r.category === c[1] && r.domain === c[2], r.category + ' / ' + r.domain);
+});
+
+// =====================================================================
+console.log('\n[5] 旧20列スキーマからの移行(取得済みの店舗データを保持すること)');
+// =====================================================================
+const LEGACY_PLACE_HEADERS = [
+  '店名', '主タイプ', '住所',
+  '電話番号(国内)', 'HP有無', 'HP URL', 'Google Maps URL',
+  '評価', '評価件数',
+  '営業状況', '通常営業時間', '価格帯',
+  'テイクアウト', 'デリバリー', '店内飲食', '予約可',
+  '子連れ向き', 'ペット可', '説明文(Editorial)',
+  'Place ID'
+];
+const legacySheet = createFakeSheet([
+  LEGACY_PLACE_HEADERS,
+  ['横浜家系ラーメン 祭家', 'ラーメン屋', '千葉県松戸市二十世紀が丘萩町1-2', '047-712-0007',
+   'なし', '', 'https://maps.google.com/?cid=1', 3.4, 655,
+   'OPERATIONAL', '月曜日: 11時00分～0時00分', 'PRICE_LEVEL_MODERATE',
+   '○', '×', '○', '×', '○', '', '', 'ChIJ_nashi'],
+  ['カフェ インスタ', 'カフェ・喫茶', '千葉県松戸市松戸1', '047-000-0001',
+   'あり', 'https://www.instagram.com/cafe_insta/', 'https://maps.google.com/?cid=2', 4.5, 120,
+   'OPERATIONAL', '月曜日: 定休日', '',
+   '', '', '○', '', '', '', '紹介文', 'ChIJ_sns'],
+  ['デニーズ 二十世紀ヶ丘店', 'ファミリー レストラン', '千葉県松戸市二十世紀が丘中松町20', '080-3437-7625',
+   'あり', 'https://shop.dennys.jp/map/21855/', 'https://maps.google.com/?cid=3', 3.6, 660,
+   'OPERATIONAL', '月曜日: 7時00分～0時00分', 'PRICE_LEVEL_MODERATE',
+   '○', '○', '○', '○', '○', '', '', 'ChIJ_chain']
+]);
+
+api.ensurePlaceDataSchemaMigrated(legacySheet);
+const migrated = legacySheet.rows();
+const col = function(name) { return api.PLACE_DATA_HEADERS.indexOf(name); };
+
+check('ヘッダーが17列の新スキーマになる',
+  migrated[0].join('|') === api.PLACE_DATA_HEADERS.join('|'), migrated[0].join('|'));
+check('データ行が3行とも保持される', migrated.length === 4, (migrated.length - 1) + '行');
+check('Place ID が末尾列に移っても欠損しない',
+  migrated[1][api.PLACE_ID_COLUMN - 1] === 'ChIJ_nashi' &&
+  migrated[3][api.PLACE_ID_COLUMN - 1] === 'ChIJ_chain');
+check('店名・評価・評価件数が保持される',
+  migrated[1][col('店名')] === '横浜家系ラーメン 祭家' &&
+  migrated[1][col('評価')] === 3.4 && migrated[1][col('評価件数')] === 655);
+check('通常営業時間・価格帯が保持される',
+  migrated[3][col('通常営業時間')] === '月曜日: 7時00分～0時00分' &&
+  migrated[3][col('価格帯')] === 'PRICE_LEVEL_MODERATE');
+check('Atmosphere系の値が新スキーマに混入しない',
+  migrated.slice(1).every(function(r) { return r.indexOf('○') === -1 && r.indexOf('紹介文') === -1; }));
+
+// 旧「HP有無」では「あり」に埋もれていた Instagram の店が、SNSのみ として拾えること。
+// この1件が拾えるかどうかがターゲット母数を左右する(実データでは HPあり の約3割)。
+check('HP URL なし → HP種別「なし」', migrated[1][col('HP種別')] === 'なし', migrated[1][col('HP種別')]);
+check('旧「HP有無=あり」のInstagram → HP種別「SNSのみ」',
+  migrated[2][col('HP種別')] === 'SNSのみ', migrated[2][col('HP種別')]);
+check('チェーン店舗ページ → HP種別「自社HP」/ HPドメインで識別できる',
+  migrated[3][col('HP種別')] === '自社HP' && migrated[3][col('HPドメイン')] === 'shop.dennys.jp',
+  migrated[3][col('HP種別')] + ' / ' + migrated[3][col('HPドメイン')]);
+check('HP URL が新スキーマでも保持される',
+  migrated[2][col('HP URL')] === 'https://www.instagram.com/cafe_insta/');
+check('旧スキーマに無い 緯度/経度/全タイプ は空になる',
+  migrated.slice(1).every(function(r) {
+    return r[col('緯度')] === '' && r[col('経度')] === '' && r[col('全タイプ')] === '';
+  }));
+
+const migratedSnapshot = JSON.stringify(legacySheet.rows());
+api.ensurePlaceDataSchemaMigrated(legacySheet);
+check('2回実行しても結果が変わらない(冪等)',
+  JSON.stringify(legacySheet.rows()) === migratedSnapshot);
+
+// 移行は列数を変えるためフィルタを一度外す。crawlAllGrids の末尾にも再作成処理があるが、
+// 未処理グリッドが残っていない実行はその手前で早期リターンしてそこへ到達しない。
+// 移行自体は冪等で次回以降スキップされるため、ここで戻さないとフィルタが永久に消える。
+const filteredSheet = createFakeSheet([
+  LEGACY_PLACE_HEADERS,
+  ['店A', 'ラーメン屋', '住所', '047-000-0000', 'なし', '', 'https://maps.google.com/?cid=9',
+   3.9, 100, 'OPERATIONAL', '月曜日: 定休日', '', '', '', '', '', '', '', '', 'ChIJ_filter']
+]);
+filteredSheet.getRange(1, 1, 2, LEGACY_PLACE_HEADERS.length).createFilter();
+api.ensurePlaceDataSchemaMigrated(filteredSheet);
+const filterRange = filteredSheet.filterRange();
+check('移行後もフィルタが張られたまま残る', filterRange !== null,
+  filterRange === null ? 'フィルタが消えている' : 'あり');
+check('張り直したフィルタが新スキーマの17列を覆う',
+  filterRange !== null && filterRange.numCols === api.PLACE_DATA_HEADERS.length &&
+  filterRange.numRows === 2,
+  filterRange ? filterRange.numRows + '行 x ' + filterRange.numCols + '列' : '-');
+
+const emptySheet = createFakeSheet([LEGACY_PLACE_HEADERS]);
+api.ensurePlaceDataSchemaMigrated(emptySheet);
+check('データ行0件でもヘッダーだけ移行できる',
+  emptySheet.rows().length === 1 &&
+  emptySheet.rows()[0].join('|') === api.PLACE_DATA_HEADERS.join('|'));
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);

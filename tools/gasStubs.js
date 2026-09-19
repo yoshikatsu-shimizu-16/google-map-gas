@@ -39,15 +39,20 @@ function createFakeSheet(initialRows) {
     while (target.length < col) target.push('');
   };
 
+  // フィルタは「張られている範囲」を覚えておく。列数が変わる移行の前後で
+  // 外しっぱなしになっていないかを検証できるようにするため。
+  let filter = null;
+
   const sheet = {
     clear: function() { cells.length = 0; return sheet; },
+    clearContents: function() { cells.length = 0; return sheet; },
     appendRow: function(values) { cells.push(values.slice()); return sheet; },
     getLastRow: function() { return cells.length; },
     getLastColumn: function() {
       return cells.reduce(function(max, r) { return Math.max(max, r.length); }, 0);
     },
     setFrozenRows: function() { return sheet; },
-    getFilter: function() { return null; },
+    getFilter: function() { return filter; },
     getRange: function(row, col, numRows, numCols) {
       const nr = numRows || 1;
       const nc = numCols || 1;
@@ -67,10 +72,17 @@ function createFakeSheet(initialRows) {
           }
           return out;
         },
-        createFilter: function() { return {}; }
+        createFilter: function() {
+          filter = {
+            range: { row: row, col: col, numRows: nr, numCols: nc },
+            remove: function() { filter = null; }
+          };
+          return filter;
+        }
       };
     },
-    rows: function() { return cells; }
+    rows: function() { return cells; },
+    filterRange: function() { return filter ? filter.range : null; }
   };
   return sheet;
 }
