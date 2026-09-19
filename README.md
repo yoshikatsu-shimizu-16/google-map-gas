@@ -35,11 +35,18 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `lib/crawler/PlaceRowWriter.js` | 内部ヘルパー | 「全飲食店データ」への一括書き込みと Place ID による重複除去 |
 | `lib/crawler/PlaceDataSheetFilter.js` | 内部ヘルパー | 「全飲食店データ」シートのフィルタ範囲の方針(運用者の絞り込み条件を消さない張り方) |
 | `lib/crawler/PlaceDataSchemaMigration.js` | 内部ヘルパー | 「全飲食店データ」シートの列構成を保持したまま最新スキーマへ移行 |
-| `lib/catalog/PlaceTypeCatalog.js` | データ | 検索対象 Place Type のカタログ定義(頻度別4グループ)と密集時のタイプ分割 |
+| `lib/catalog/PlaceTypeCatalog.js` | データ | 検索対象 Place Type のカタログ定義(頻度別4グループ、および両者から導出した166種のカタログ `ALL_SEARCHABLE_PLACE_TYPES`)と密集時のタイプ分割 |
+| `lib/catalog/PlaceTypeProbeSet.js` | データ | includedTypes 1コールで166種の大半を被覆するためのプローブ集合と被覆判定 `isCoveredByProbeSet` |
+| `lib/catalog/PlaceTypeCoverageAnalysis.js` | 内部ヘルパー | プローブ集合の被覆率集計・貪欲法による最小被覆集合の算出(Sheet/Logger/APIに依存しない純関数) |
+| `lib/crawler/SearchStrategyMode.js` | 内部ヘルパー | 検索戦略(`type_groups`/`probe`)をスクリプトプロパティで切り替える単一の真実源 |
+| `lib/crawler/TypeGroupCellSearch.js` | 内部ヘルパー | 1セルを頻度別グループ(A/B/C/D)で探索する手順(`type_groups`方式の実体、`probe`方式のフォールバック先) |
+| `lib/crawler/ProbeFirstCellSearch.js` | 内部ヘルパー | 1セルをプローブ集合優先で探索する手順(`probe`方式の実体) |
+| `entrypoints/auditProbeSetCoverage.js` | エントリーポイント | 「全飲食店データ」の実測値からプローブ集合の被覆率を判定(APIコール0) |
+| `entrypoints/compareProbeSetWithTypeGroups.js` | エントリーポイント | 指定グリッドでプローブ集合とタイプグループの Place ID 差分を確認(5〜25コール) |
 | `docs/Overview.js` | ドキュメント | プロジェクト全体の設計意図(ワークフロー全体像・密集エリア対策・月間APIコール上限の理由) |
 | `appsscript.json` | 設定 | GASプロジェクトのマニフェスト(タイムゾーン・実行環境など) |
 | `.clasp.json.example` | 設定 | `clasp` 用設定のひな形(実際の `.clasp.json` は各自で作成し、Gitには含めません) |
-| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記17個の `.js` と `appsscript.json` のみに限定する設定 |
+| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記24個の `.js` と `appsscript.json` のみに限定する設定 |
 
 ## Google Drive 上の Apps Script プロジェクトとの接続方法
 
@@ -111,22 +118,32 @@ npm run push
 - `GOOGLE_MAPS_API_KEY` — Google Maps Platform の APIキー
 - `TARGET_SPREADSHEET_ID` — 書き込み先スプレッドシートID(未設定の場合、`generateGridList`
   実行時に新規スプレッドシートが自動作成されます)
+- `SEARCH_STRATEGY`(任意) — `crawlAllGrids` の探索方式。`type_groups`(既定、未設定時と同じ)
+  なら頻度別4グループ(A/B/C/D)で毎セル無条件に検索する旧方式、`probe` ならプローブ集合
+  (`PLACE_TYPE_PROBE_SET`)優先の新方式(疎セルは1コールで確定、20件飽和セルだけ旧方式に
+  完全フォールバック)。不正な値を入れると警告ログ付きで `type_groups` にフォールバックする。
+  `probe` に切り替える前に必ず `auditProbeSetCoverage` で被覆率を確認すること
+  (詳細は `docs/Overview.js` のリスク表を参照)
+- `PROBE_COMPARISON_GRID_ID`(任意) — `compareProbeSetWithTypeGroups` の対象グリッドID。
+  未設定なら0コールで案内ログのみを出して終了する(実行メニューからの誤爆防止)
 
 ## エントリーポイント一覧
 
 GASの「実行」メニューやトリガー設定画面に並ぶ関数のうち、直接実行を想定しているのは
-以下6個です。それ以外の関数は内部ヘルパーであり、他の関数からのみ呼び出されます。
+以下8個です。それ以外の関数は内部ヘルパーであり、他の関数からのみ呼び出されます。
 各関数のJSDoc先頭にも `[エントリーポイント/...]` の目印を付けているので、コードを読む際も
 この表と同じ分類がその場で分かります。
 
 | 関数名 | ファイル | 種別 | 用途 | 備考 |
 |---|---|---|---|---|
 | `generateGridList` | `entrypoints/generateGridList.js` | 手動実行 | 対象エリアをグリッド分割し「グリッド一覧」シートを作成 | 再実行すると処理状況(進捗)がリセットされる |
-| `crawlAllGrids` | `entrypoints/crawlAllGrids.js` | トリガー対象(手動再実行も可) | グリッド巡回・店舗検索・「全飲食店データ」への書き込み | 日次3時台の自動トリガー対象。関数名は変更禁止(トリガーが文字列で参照) |
+| `crawlAllGrids` | `entrypoints/crawlAllGrids.js` | トリガー対象(手動再実行も可) | グリッド巡回・店舗検索・「全飲食店データ」への書き込み | 日次3時台の自動トリガー対象。関数名は変更禁止(トリガーが文字列で参照)。`SEARCH_STRATEGY` で探索方式を切替 |
 | `createDailyTrigger` | `entrypoints/triggers.js` | 手動実行(初回のみ) | `crawlAllGrids` の日次トリガーを設定 | 何度実行しても重複作成されない |
 | `listTriggers` | `entrypoints/triggers.js` | 確認用 | 現在設定されているトリガー一覧をログ出力 | 副作用なし |
-| `checkMonthlyApiUsage` | `entrypoints/checkMonthlyApiUsage.js` | 確認用 | 今月のAPIコール数をログ出力 | 副作用なし |
+| `checkMonthlyApiUsage` | `entrypoints/checkMonthlyApiUsage.js` | 確認用 | 今月のAPIコール数と現在の検索方式をログ出力 | 副作用なし |
 | `resetRestaurantData` | `entrypoints/resetRestaurantData.js` | 手動実行(初回・データ再取得時のみ) | 「全飲食店データ」シートのデータ行を全削除 | データ消去を伴うため実行前に要確認 |
+| `auditProbeSetCoverage` | `entrypoints/auditProbeSetCoverage.js` | 確認用 | 実測データからプローブ集合の被覆率・最小被覆集合をログ出力 | 副作用なし。**APIコール0**。`SEARCH_STRATEGY=probe` へ切り替える前に実行すること |
+| `compareProbeSetWithTypeGroups` | `entrypoints/compareProbeSetWithTypeGroups.js` | 確認用 | 指定グリッドでプローブ集合とタイプグループの Place ID 差分をログ出力 | `PROBE_COMPARISON_GRID_ID` 未設定なら0コールで案内のみ。設定時は5〜25コール |
 
 ## 実行順序(初回セットアップ)
 
@@ -142,9 +159,14 @@ GASの「実行」メニューやトリガー設定画面に並ぶ関数のう�
 ## ローカル検証
 
 GAS には型チェックもコンパイルもなく、識別子の取り違えはデプロイして実行するまで
-分かりません。`tools/` に2つの検証スクリプトを置いており、**APIコールもスプレッドシートも
+分かりません。`tools/` に3つの検証スクリプトを置いており、**APIコールもスプレッドシートも
 使わずに**手元で実行できます。`tools/` は `.claspignore` の対象外なので `clasp push`
-では送信されません。
+では送信されません。まとめて実行するには:
+
+```bash
+npm test
+# = node tools/verifyGridGeometry.js && node tools/verifyProbeSetCoverage.js && node tools/verifyCrawlerOnStubs.js
+```
 
 ```bash
 node tools/verifyGridGeometry.js
@@ -155,12 +177,25 @@ node tools/verifyGridGeometry.js
 対照として出力するため、分割ロジックを変更した際のリグレッション検知に使えます。
 
 ```bash
+node tools/verifyProbeSetCoverage.js
+```
+
+`PLACE_TYPE_PROBE_SET` / `isCoveredByProbeSet` / `parsePlaceTypesCell` /
+`summarizeProbeCoverage` / `findMinimalProbeCover`(Sheet/Logger/APIに依存しない純関数)を
+検証します。貪欲法の最小被覆集合は決定的である(再実行しても選択順が揺れない)ことも
+確認します。`auditProbeSetCoverage` 自体もフェイクシート上で1回通し、「全タイプ」が空の行が
+未被覆ではなく判定対象外として扱われることを確認します。
+
+```bash
 node tools/verifyCrawlerOnStubs.js
 ```
 
 `.claspignore` のホワイトリスト全ファイルを GAS と同じ単一グローバルスコープに結合し、
 スタブ上で `generateGridList` → `crawlAllGrids` を通します。処理状況の遷移、子グリッドの
-生成、Place ID の重複除去、コール数の計測、旧スキーマからの移行(進捗の保持と冪等性)を
+生成、Place ID の重複除去、コール数の計測、旧スキーマからの移行(進捗の保持と冪等性)に加え、
+`SEARCH_STRATEGY=probe`(プローブ優先方式)についても、疎セルが1コールで確定すること、
+密集セルでの子グリッド生成数が旧方式と一致すること、疎セルの取得 Place ID 集合が新旧で
+完全一致すること、プローブ集合で被覆されない店が見つかったときに警告ログが出ることを
 確認します。**デプロイ前にこちらを通しておくと、関数名の取り違えを実機で踏まずに済みます。**
 
 ## スキーマ移行とロールバック
@@ -189,6 +224,21 @@ node tools/verifyCrawlerOnStubs.js
 古いコードに戻す場合は `clasp push` 前のコミットに戻して再 push します。ただし
 **シートに追加されたH列と新しいステータスは残る**ため、旧コードで動かすときは
 H列を削除し、`処理済み(A=0のため省略)` を `未処理` に一括置換してください。
+
+### 検索方式(SEARCH_STRATEGY)のロールバックと再掃討
+
+`SEARCH_STRATEGY=probe` を試して問題があった場合、スクリプトプロパティを
+`type_groups` に戻せば **push なしで即座に**旧方式へ戻ります。「処理状況」列に
+`処理済み(プローブ)` が付いた行は、旧コード(`SEARCH_STRATEGY` を知らない版)から見ると
+未知のステータスのため `DONE_STATUSES` に含まれず、旧コードに完全に戻す場合は
+`未処理` に一括置換してください(この状態から `crawlAllGrids` を実行すると、
+そのセルは旧方式で4コールかけて再クロールされます)。
+
+`処理済み(A=0のため省略)` は「グループAが0件だったためB/C/Dの3コールを省略した」
+セルであり、稀タイプだけが存在するセルを取りこぼしている既知の穴です。プローブ集合は
+傘型で稀タイプも覆うため、**この行を `未処理` に一括置換して `SEARCH_STRATEGY=probe` で
+再走査すれば、1セルあたり1コールでこの穴を塞げます**(自動化はしていないので、
+必要になったタイミングで手動置換してください)。
 
 ### 「全飲食店データ」シート
 
