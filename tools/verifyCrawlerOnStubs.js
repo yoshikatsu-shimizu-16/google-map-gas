@@ -52,7 +52,8 @@ const api = new Function(source + `
     ensureGridSchemaMigrated: ensureGridSchemaMigrated,
     cellCoverRadiusMeters: cellCoverRadiusMeters,
     GRID_SHEET_HEADERS: GRID_SHEET_HEADERS,
-    GRID_STEP: GRID_STEP
+    GRID_STEP: GRID_STEP,
+    MAX_TIER: MAX_TIER
   };
 `)();
 
@@ -144,6 +145,14 @@ check('階層0はセルサイズ0.01度', rows[1][7] === api.GRID_STEP, 'セル�
     'セルサイズ=' + r[7].toFixed(6) + '度 → 再導出半径=' + rederived + 'm');
 });
 check('逆算したセルサイズが階層に応じて小さくなる', rows[2][7] > rows[3][7] && rows[3][7] > 0);
+
+// 旧ロジック(円0.6倍)が生成した tier≥1 の行を、新ロジックの矩形四分木分割に
+// かけると被覆漏れが再発するため、移行時に階層を MAX_TIER へ固定していること。
+check('旧ロジックのtier1行の階層がMAX_TIERに固定される',
+  rows[2][5] === api.MAX_TIER, '階層=' + rows[2][5] + ' (MAX_TIER=' + api.MAX_TIER + ')');
+check('旧ロジックのtier2行の階層がMAX_TIERに固定される',
+  rows[3][5] === api.MAX_TIER, '階層=' + rows[3][5] + ' (MAX_TIER=' + api.MAX_TIER + ')');
+check('tier0の親行は階層0のまま', rows[1][5] === 0, '階層=' + rows[1][5]);
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);
