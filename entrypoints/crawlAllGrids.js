@@ -198,7 +198,7 @@ function crawlAllGrids() {
     } else if (result.hadFailure) {
       gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('エラー');
     } else if (result.emptyByGroupA) {
-      gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('処理済み(A=0のため省略)');
+      gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue(GRID_STATUS_EMPTY_BY_GROUP_A);
       processedCount++;
     } else if (result.probeResolved) {
       gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('処理済み(プローブ)');
