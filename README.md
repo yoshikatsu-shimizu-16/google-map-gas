@@ -43,12 +43,15 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `lib/crawler/ProbeFirstCellSearch.js` | 内部ヘルパー | 1セルをプローブ集合優先で探索する手順(`probe`方式の実体) |
 | `entrypoints/auditProbeSetCoverage.js` | エントリーポイント | 「全飲食店データ」の実測値からプローブ集合の被覆率を判定(APIコール0) |
 | `entrypoints/compareProbeSetWithTypeGroups.js` | エントリーポイント | 指定グリッドでプローブ集合とタイプグループの Place ID 差分を確認(5〜25コール) |
-| `tools/fetchOsmFoodPois.js` | ローカル用 | OpenStreetMap から対象エリアの飲食系POIを取得(APIキー不要・Googleのコールを使わない) |
+| `lib/survey/OsmFoodPoiSource.js` | 内部ヘルパー | OpenStreetMap の飲食系POIを取得(Overpass。APIキー不要・Googleのクォータを消費しない) |
+| `lib/survey/CellDensityIndex.js` | 内部ヘルパー | POIをセル矩形・検索円に対応付けて件数を引く(純関数) |
+| `entrypoints/surveyEmptyCells.js` | エントリーポイント | OSMが0件と見たセルをPro段1コールずつで実地確認(**営業用の枠を消費しない**) |
+| `tools/fetchOsmFoodPois.js` | ローカル用 | 上記の共有クエリをローカルから curl で叩き、結果をキャッシュする |
 | `tools/buildDensityMap.js` | ローカル用 | セル別の飲食店密度を見積もり、コール数を試算(`npm run density`) |
 | `docs/Overview.js` | ドキュメント | プロジェクト全体の設計意図(ワークフロー全体像・密集エリア対策・月間APIコール上限の理由) |
 | `appsscript.json` | 設定 | GASプロジェクトのマニフェスト(タイムゾーン・実行環境など) |
 | `.clasp.json.example` | 設定 | `clasp` 用設定のひな形(実際の `.clasp.json` は各自で作成し、Gitには含めません) |
-| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記24個の `.js` と `appsscript.json` のみに限定する設定 |
+| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記27個の `.js` と `appsscript.json` のみに限定する設定 |
 
 ## Google Drive 上の Apps Script プロジェクトとの接続方法
 
@@ -133,6 +136,22 @@ npm run push
   > ままの場合や、全行の「全タイプ」が空の場合は、被覆率を出さずに理由を添えて中断します
   > (住所列を誤って読んで「被覆率0%」を出さないため)。判定には、フィールドマスク更新後に
   > 新しく取得した行が必要です。
+### 無料枠は課金SKUごとに別勘定
+
+`X-Goog-FieldMask` の中身で課金SKUが決まり、**無料枠も段ごとに分かれています**。
+
+| SKU | 無料枠/月 | このプロジェクトでの用途 | fieldMask |
+|---|---|---|---|
+| Pro | **5,000** | 調査(どう割れば20件に収まるかを調べる) | `PLACE_SURVEY_FIELD_MASK` |
+| Enterprise | 1,000 | 営業データの収穫(評価・HP・電話) | `PLACE_SEARCH_FIELD_MASK` |
+
+自前のコール数管理も SKU 単位で分けています(`MONTHLY_QUOTA_BY_SKU`)。分けないと調査の
+試行錯誤が営業用の枠を食い潰してしまうためです。SKUは呼び出し側が指定するのではなく
+**fieldMask から導出**します(`apiSkuOfFieldMask`)。未知のマスクは安全側の Enterprise 扱いです。
+
+消費数のスクリプトプロパティは Pro が `MONTHLY_PRO_API_CALL_COUNT`、
+Enterprise が `MONTHLY_API_CALL_COUNT`(運用中のカウントを引き継ぐため改名していません)。
+
 - `PROBE_COMPARISON_GRID_ID`(任意) — `compareProbeSetWithTypeGroups` の対象グリッドID。
   未設定なら0コールで案内ログのみを出して終了する(実行メニューからの誤爆防止)
 
@@ -151,6 +170,7 @@ GASの「実行」メニューやトリガー設定画面に並ぶ関数のう�
 | `listTriggers` | `entrypoints/triggers.js` | 確認用 | 現在設定されているトリガー一覧をログ出力 | 副作用なし |
 | `checkMonthlyApiUsage` | `entrypoints/checkMonthlyApiUsage.js` | 確認用 | 今月のAPIコール数と現在の検索方式をログ出力 | 副作用なし |
 | `resetRestaurantData` | `entrypoints/resetRestaurantData.js` | 手動実行(初回・データ再取得時のみ) | 「全飲食店データ」シートのデータ行を全削除 | データ消去を伴うため実行前に要確認 |
+| `surveyEmptyCells` | `entrypoints/surveyEmptyCells.js` | 調査用 | OSMが0件と見たセルを1コールずつ実地確認し「調査ログ」に記録 | **Pro段のため営業用の枠(1,000/月)を消費しない**。本番シートに書き込まない。再実行で続きから |
 | `auditProbeSetCoverage` | `entrypoints/auditProbeSetCoverage.js` | 確認用 | 実測データからプローブ集合の被覆率・最小被覆集合をログ出力 | 副作用なし。**APIコール0**。`SEARCH_STRATEGY=probe` へ切り替える前に実行すること。**「全タイプ」列が埋まった行が必要**(下記の前提を参照) |
 | `compareProbeSetWithTypeGroups` | `entrypoints/compareProbeSetWithTypeGroups.js` | 確認用 | 指定グリッドでプローブ集合とタイプグループの Place ID 差分をログ出力 | `PROBE_COMPARISON_GRID_ID` 未設定なら0コールで案内のみ。設定時は5〜25コール |
 

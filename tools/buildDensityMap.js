@@ -19,7 +19,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { fetchOsmFoodPois } = require('./fetchOsmFoodPois');
+const { fetchOsmFoodPoisViaCurl } = require('./fetchOsmFoodPois');
 
 const REPO_ROOT = path.join(__dirname, '..');
 
@@ -30,14 +30,16 @@ const REPO_ROOT = path.join(__dirname, '..');
  * @returns {{TARGET_AREA_BOUNDS: Object, GRID_STEP: number, cellCoverRadiusMeters: Function}}
  */
 function loadGridDefinition() {
-  const source = ['lib/grid/TargetArea.js', 'lib/grid/GridGeometry.js']
+  const source = ['lib/grid/TargetArea.js', 'lib/grid/GridGeometry.js', 'lib/survey/CellDensityIndex.js']
     .map(function(f) { return fs.readFileSync(path.join(REPO_ROOT, f), 'utf8'); })
     .join('\n');
   return new Function(source + `
     return {
       TARGET_AREA_BOUNDS: TARGET_AREA_BOUNDS,
       GRID_STEP: GRID_STEP,
-      cellCoverRadiusMeters: cellCoverRadiusMeters
+      cellCoverRadiusMeters: cellCoverRadiusMeters,
+      countPoisByCell: countPoisByCell,
+      countPoisWithinRadius: countPoisWithinRadius
     };
   `)();
 }
@@ -75,27 +77,17 @@ function buildCells(bounds, step, radiusOf) {
 }
 
 /**
- * POI をセル矩形に割り当てる。範囲外の POI は捨てる(bbox の端の丸め分)。
+ * 共有の countPoisByCell(「行_列」→件数)の結果を各セルに書き戻す。
  *
  * @param {Array<Object>} cells
- * @param {Array<Object>} pois
- * @param {Object} bounds
- * @param {number} step
- * @param {number} lngSteps
- * @returns {number} 割り当てられた POI 数
+ * @param {Object<string, number>} countByCell
+ * @returns {number} 割り当てられた POI 数(bbox の外縁ぶんは入らない)
  */
-function assignPoisToCells(cells, pois, bounds, step, lngSteps) {
-  const byGridId = {};
-  cells.forEach(function(c) { byGridId[c.gridId] = c; });
-
+function applyCounts(cells, countByCell) {
   let assigned = 0;
-  pois.forEach(function(poi) {
-    const i = Math.floor((poi.lat - bounds.latMin) / step);
-    const j = Math.floor((poi.lng - bounds.lngMin) / step);
-    const cell = byGridId[i * lngSteps + j + 1];
-    if (!cell) return; // bbox の外縁
-    cell.osmCount++;
-    assigned++;
+  cells.forEach(function(c) {
+    c.osmCount = countByCell[c.row + '_' + c.col] || 0;
+    assigned += c.osmCount;
   });
   return assigned;
 }
@@ -152,18 +144,19 @@ function estimateDensityDrivenCalls(count) {
 
 function main() {
   const refresh = process.argv.indexOf('--refresh') !== -1;
-  const { TARGET_AREA_BOUNDS, GRID_STEP, cellCoverRadiusMeters } = loadGridDefinition();
+  const { TARGET_AREA_BOUNDS, GRID_STEP, cellCoverRadiusMeters,
+          countPoisByCell, countPoisWithinRadius } = loadGridDefinition();
 
   console.log('\n===== セル別 飲食店密度の見積もり(OpenStreetMap / APIコール0) =====');
   console.log('対象範囲: 北緯 ' + TARGET_AREA_BOUNDS.latMin + '〜' + TARGET_AREA_BOUNDS.latMax +
     ' / 東経 ' + TARGET_AREA_BOUNDS.lngMin + '〜' + TARGET_AREA_BOUNDS.lngMax);
 
-  const { pois, fromCache, timestamp } = fetchOsmFoodPois(TARGET_AREA_BOUNDS, { refresh: refresh });
+  const { pois, fromCache, timestamp } = fetchOsmFoodPoisViaCurl(TARGET_AREA_BOUNDS, { refresh: refresh });
   console.log('OSM POI: ' + pois.length + '件' +
     (fromCache ? '(キャッシュ)' : '(Overpass から取得)') + ' / OSMデータ時点: ' + timestamp);
 
   const { cells, latSteps, lngSteps } = buildCells(TARGET_AREA_BOUNDS, GRID_STEP, cellCoverRadiusMeters);
-  const assigned = assignPoisToCells(cells, pois, TARGET_AREA_BOUNDS, GRID_STEP, lngSteps);
+  const assigned = applyCounts(cells, countPoisByCell(pois, TARGET_AREA_BOUNDS, GRID_STEP));
   console.log('セル: ' + latSteps + '行 × ' + lngSteps + '列 = ' + cells.length + 'マス' +
     ' / 割り当て済みPOI: ' + assigned + '件\n');
 
@@ -182,6 +175,17 @@ function main() {
   const dense = cells.filter(function(c) { return c.osmCount >= 20; });
   console.log('  20件以上のマスは ' + dense.length + '。ここだけ事前に細かく割れば、');
   console.log('  「20件出てから割り直す」ための探りコールが不要になる。');
+
+  // 実際の検索は矩形ではなく「矩形を覆う円」で行い、円は隣にはみ出す。セルを飛ばして
+  // よいかの判定はこちらでないと誤る(矩形が空でも、隣の店が円に入れば結果は返る)。
+  const emptyInCircle = cells.filter(function(c) {
+    return countPoisWithinRadius(pois, c.centerLat, c.centerLng, c.radius) === 0;
+  });
+  console.log('  ただし検索範囲は半径' + cells[0].radius + 'mの円で、隣にはみ出す。');
+  console.log('  円の中まで見て0件なのは ' + emptyInCircle.length + 'マス' +
+    '(矩形基準の ' + empty + 'マスより少ない)。');
+  console.log('  entrypoints/surveyEmptyCells.js が Pro枠で実地確認するのはこの ' +
+    emptyInCircle.length + 'マス。');
 
   // --- コスト試算 ---
   // 現行の実績値。2026-09-20 の実行ログ(15マス着手 / 103コール)から。
