@@ -8,7 +8,12 @@
  * 必ずここで裏を取る。
  *
  * コスト: Pro段(PLACE_SURVEY_FIELD_MASK)なので **Enterprise枠(営業用の1,000/月)を消費しない**。
- * Pro枠は 5,000/月 あり、180マスを1コールずつ見ても3.6%しか使わない。
+ * 1セルにつき必ず1コールで、タイプ分割も四分木分割もしない(空かどうかを見るだけなので不要)。
+ * したがって消費するコール数は「確認対象のセル数」と完全に一致する。
+ *
+ * 叩く前に件数を知りたい場合は、スクリプトプロパティ SURVEY_MAX_CALLS に 0 を設定して
+ * 実行する。対象セル数を数えて報告するだけで、Google へのリクエストは1件も発生しない。
+ * 1回の実行で使う上限を決めたい場合は、その件数を入れる(未設定なら上限なし)。
  *
  * 安全性:
  *   - 「全飲食店データ」にも「グリッド一覧」にも書き込まない。結果は「調査ログ」シートのみ
@@ -25,6 +30,7 @@ function surveyEmptyCells() {
   const MAX_RUNTIME_MS = 4.5 * 60 * 1000; // GASの実行時間上限(6分)に対する安全マージン
 
   const scriptProps = PropertiesService.getScriptProperties();
+  const maxCalls = readSurveyMaxCalls(scriptProps);
   const apiKey = scriptProps.getProperty('GOOGLE_MAPS_API_KEY');
   const spreadsheetId = scriptProps.getProperty('TARGET_SPREADSHEET_ID');
   if (!spreadsheetId) {
@@ -61,9 +67,13 @@ function surveyEmptyCells() {
   // --- 3. 対象セルを選ぶ: 円の中に OSM のPOIが1件も無いセル ---
   const gridValues = gridSheet.getRange(2, 1, gridLastRow - 1, GRID_SHEET_COLUMN_COUNT).getValues();
   const targets = [];
+  let skippedDone = 0;
   gridValues.forEach(function(row) {
     const gridId = row[0];
     if (surveyedGridIds.has(gridId)) return; // 調査済み
+    // 探索が終わったセルは結果が分かっているので調べる必要がない。
+    // この調査の目的は「これから探索するセルを飛ばしてよいか」の判断材料を作ること。
+    if (GRID_DONE_STATUSES.indexOf(row[GRID_COL_STATUS - 1]) !== -1) { skippedDone++; return; }
     const lat = row[1], lng = row[2], radius = row[3];
     // 実際の検索は矩形を覆う円で行い、円は隣のセルにはみ出す。矩形ではなく円で数える。
     const osmCount = countPoisWithinRadius(osm.pois, lat, lng, radius);
@@ -71,11 +81,23 @@ function surveyEmptyCells() {
     targets.push({ gridId: gridId, lat: lat, lng: lng, radius: radius });
   });
 
+  Logger.log('探索済みのため対象外: ' + skippedDone + 'セル(結果が分かっているので調べる必要がない)');
   if (targets.length === 0) {
     Logger.log('確認が必要な0件予測セルはありません(すべて調査済み、またはOSMが店を知っています)。');
     return;
   }
-  Logger.log('確認対象: ' + targets.length + 'セル。1セル1コールで確認します。');
+
+  const plannedCalls = maxCalls === null ? targets.length : Math.min(targets.length, maxCalls);
+  if (plannedCalls === 0) {
+    // 試算モード。知りたいのは「0コール」ではなく「実行したら何コール要るか」。
+    Logger.log('確認対象: ' + targets.length + 'セル / 実行すれば ' + targets.length +
+      ' コール消費します(1セル1コール、すべてPro段)');
+    Logger.log('SURVEY_MAX_CALLS が 0 のため、ここで終了します。Googleへのリクエストは発生していません。');
+    Logger.log('実行するには SURVEY_MAX_CALLS を消すか、使ってよいコール数を設定してください。');
+    return;
+  }
+  Logger.log('確認対象: ' + targets.length + 'セル / 今回消費するコール数: ' + plannedCalls +
+    '(1セル1コール、すべてPro段)');
 
   // --- 4. 1セル1コールで確認する ---
   const rows = [];
@@ -84,6 +106,10 @@ function surveyEmptyCells() {
   let stoppedReason = '';
 
   for (let i = 0; i < targets.length; i++) {
+    if (maxCalls !== null && rows.length >= maxCalls) {
+      stoppedReason = 'SURVEY_MAX_CALLS(' + maxCalls + '件)に達したため中断しました。再実行すると続きから確認します。';
+      break;
+    }
     if (new Date().getTime() - startTime > MAX_RUNTIME_MS) {
       stoppedReason = '実行時間の上限に近づいたため中断しました。再実行すると続きから確認します。';
       break;
@@ -127,6 +153,27 @@ function surveyEmptyCells() {
   if (notEmpty > 0) {
     Logger.log('「空でない」が出ています。OSMの0件だけを根拠にセルを除外するのは危険です。');
   }
+}
+
+/**
+ * 1回の実行で使ってよいコール数の上限を読む。
+ * 0 を指定すると「数えるだけで叩かない」試算モードになる。未設定なら上限なし。
+ *
+ * 想定している使い方: 請求先を紐付けた本番キーに切り替えた直後など、
+ * 消費量を確定させてから実行したいとき。
+ *
+ * @param {Properties} scriptProps
+ * @returns {number|null} 上限。null は上限なし
+ */
+function readSurveyMaxCalls(scriptProps) {
+  const raw = scriptProps.getProperty('SURVEY_MAX_CALLS');
+  if (raw === null || raw === '') return null;
+  const parsed = parseInt(raw, 10);
+  if (isNaN(parsed) || parsed < 0) {
+    Logger.log('SURVEY_MAX_CALLS の値が不正です: "' + raw + '"。上限なしとして扱います。');
+    return null;
+  }
+  return parsed;
 }
 
 /** 調査ログシートの列。判定の根拠を後から追えるよう、件数と中身の要約も残す。 */
