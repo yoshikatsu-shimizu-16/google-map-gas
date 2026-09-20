@@ -84,7 +84,10 @@ const api = new Function(source + `
     PLACE_TYPE_PROBE_SET: PLACE_TYPE_PROBE_SET,
     OSM_EMPTY_GRID_IDS: OSM_EMPTY_GRID_IDS,
     TARGET_AREA_BOUNDS: TARGET_AREA_BOUNDS,
-    GRID_STATUS_EMPTY_BY_GROUP_A: GRID_STATUS_EMPTY_BY_GROUP_A
+    GRID_STATUS_EMPTY_BY_GROUP_A: GRID_STATUS_EMPTY_BY_GROUP_A,
+    compareProbeSetWithTypeGroups: compareProbeSetWithTypeGroups,
+    PROBE_SURVEY_LOG_HEADERS: PROBE_SURVEY_LOG_HEADERS,
+    BASE_TYPE_GROUPS: BASE_TYPE_GROUPS
   };
 `)();
 
@@ -821,6 +824,103 @@ api.checkMonthlyApiUsage();
 check('先月のカウントは今月の消費として表示しない',
   staleStub.logs.some(function(l) { return l.indexOf('0 / 1000') !== -1; }),
   staleStub.logs.filter(function(l) { return l.indexOf('営業') !== -1; })[0] || '(表示なし)');
+
+// =====================================================================
+console.log('\n[11] 傘型プローブの被覆検証(compareProbeSetWithTypeGroups)');
+// =====================================================================
+// プローブ1コールで A/B/C/D 4コールと同じ店が取れるかを実地で見る。
+// Pro段で行い、取得した place は「全飲食店データ」に書かない
+// (rating も websiteUri も無い不完全な行を入れると、Place ID の重複除去で
+//  本番クロールが二度とその店の営業データを取りに行かなくなる)。
+
+const PROBE_CELLS = [
+  [501, 35.80, 139.95, 717, '未処理', 0, '', 0.01],
+  [502, 35.81, 139.96, 717, '未処理', 0, '', 0.01]
+];
+
+/**
+ * compareProbeSetWithTypeGroups を1回実行する。
+ * @param {function(Object): Object} respond - includedTypes に応じて返す places を決める
+ * @param {Object} props
+ */
+const runProbeSurvey = function(respond, props) {
+  const s = installGasGlobals({ respondToSearch: respond });
+  s.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+  s.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+  s.sheets['グリッド一覧'] = createFakeSheet([api.GRID_SHEET_HEADERS].concat(PROBE_CELLS.map(function(r) { return r.slice(); })));
+  Object.keys(props || {}).forEach(function(k) { s.properties[k] = props[k]; });
+  api.compareProbeSetWithTypeGroups();
+  return s;
+};
+
+/** プローブでも4グループでも同じ1件が返る = 傘型が成立しているケース。 */
+const agreeingResponse = function() {
+  return { places: [{ id: 'same_1', displayName: { text: '同じ店' }, types: ['ramen_restaurant', 'restaurant'] }] };
+};
+
+const agreed = runProbeSurvey(agreeingResponse, { PROBE_SURVEY_SAMPLE_SIZE: '2' });
+check('判定できたセル数と一致セル数を報告する',
+  agreed.logs.some(function(l) { return l.indexOf('完全一致: 2/2セル') !== -1; }),
+  agreed.logs.filter(function(l) { return l.indexOf('完全一致') === 0; })[0] || '(報告なし)');
+check('取りこぼしが無ければその旨を報告する',
+  agreed.logs.some(function(l) { return l.indexOf('取りこぼしはありませんでした') !== -1; }));
+check('1セルあたり5コール(プローブ1 + A/B/C/D 4)', agreed.requestCount() === 10,
+  agreed.requestCount() + '回 / 2セル');
+check('Pro枠だけを消費する(営業用のEnterprise枠を使わない)',
+  parseInt(agreed.properties[proQuota.countProp] || '0', 10) === 10 &&
+  parseInt(agreed.properties[entQuota.countProp] || '0', 10) === 0,
+  'Pro=' + agreed.properties[proQuota.countProp] + ' / Enterprise=' + (agreed.properties[entQuota.countProp] || 0));
+check('「全飲食店データ」に書き込まない(不完全な行で本番を汚さない)',
+  !agreed.sheets['全飲食店データ']);
+
+/** グループDでしか返らない店がある = 傘型が取りこぼしているケース。 */
+const leakingResponse = function(body) {
+  const isProbe = body.includedTypes.length === api.PLACE_TYPE_PROBE_SET.length;
+  if (isProbe) return { places: [{ id: 'same_1', types: ['restaurant'] }] };
+  const isGroupD = body.includedTypes[0] === api.BASE_TYPE_GROUPS[3][0];
+  if (isGroupD) {
+    return { places: [{ id: 'leaked_1', displayName: { text: '漏れた店' }, types: ['tibetan_restaurant', 'food'] }] };
+  }
+  return { places: [{ id: 'same_1', types: ['restaurant'] }] };
+};
+
+const leaked = runProbeSurvey(leakingResponse, { PROBE_SURVEY_SAMPLE_SIZE: '1' });
+check('取りこぼした店を数える',
+  leaked.logs.some(function(l) { return l.indexOf('プローブが取りこぼした店: 1件') !== -1; }),
+  leaked.logs.filter(function(l) { return l.indexOf('比較した店') === 0; })[0] || '(報告なし)');
+check('被覆率を報告する',
+  leaked.logs.some(function(l) { return l.indexOf('被覆率: 50.0%') !== -1; }),
+  leaked.logs.filter(function(l) { return l.indexOf('被覆率') !== -1; })[0] || '(報告なし)');
+check('プローブ集合に足すべきタイプを提案する',
+  leaked.logs.some(function(l) { return l.indexOf('tibetan_restaurant') !== -1; }),
+  leaked.logs.filter(function(l) { return l.indexOf('tibetan') !== -1; })[0] || '(提案なし)');
+check('検証ログに漏れた店のtypesが残る',
+  leaked.sheets['調査ログ(傘型)'].rows().slice(1).some(function(r) {
+    return String(r[7]).indexOf('tibetan_restaurant') !== -1;
+  }),
+  String(leaked.sheets['調査ログ(傘型)'].rows()[1] && leaked.sheets['調査ログ(傘型)'].rows()[1][7]));
+
+/** プローブが20件返る = 飽和。U も切り捨てられるので比較しても意味が無い。 */
+const saturatedResponse = function() {
+  const places = [];
+  for (let i = 0; i < 20; i++) places.push({ id: 'sat_' + i, types: ['restaurant'] });
+  return { places: places };
+};
+
+const saturatedRun = runProbeSurvey(saturatedResponse, { PROBE_SURVEY_SAMPLE_SIZE: '1' });
+check('飽和セルはプローブ1コールで打ち切る(4グループを叩かない)',
+  saturatedRun.requestCount() === 1, saturatedRun.requestCount() + '回');
+check('飽和セルは判定不能として数える',
+  saturatedRun.logs.some(function(l) { return l.indexOf('飽和で判定不能: 1') !== -1; }),
+  saturatedRun.logs.filter(function(l) { return l.indexOf('判定できたセル') === 0; })[0] || '(報告なし)');
+
+// 再実行時に同じセルを二度叩かないこと
+const probeLogSheet = agreed.sheets['調査ログ(傘型)'];
+check('検証ログのヘッダーが定義どおり',
+  probeLogSheet.rows()[0].join('|') === api.PROBE_SURVEY_LOG_HEADERS.join('|'),
+  probeLogSheet.rows()[0].join('|'));
+check('検証したセルがログに残る(再実行で続きから進めるため)',
+  probeLogSheet.rows().length - 1 === 2, (probeLogSheet.rows().length - 1) + '行');
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);
