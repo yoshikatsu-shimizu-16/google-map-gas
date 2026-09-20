@@ -648,7 +648,7 @@ const SURVEY_CELLS = [
  * surveyEmptyCells を1回実行する。
  * @param {Object} sheets - 引き継ぎたいシート(2回目の実行で調査ログを引き継ぐ)
  */
-const runSurvey = function(sheets) {
+const runSurvey = function(sheets, props) {
   const s = installGasGlobals({
     respondToOverpass: function() {
       return { elements: [{ type: 'node', lat: 35.800, lon: 139.950, tags: { amenity: 'restaurant', name: 'OSMが知っている店' } }] };
@@ -667,6 +667,7 @@ const runSurvey = function(sheets) {
   s.sheets['グリッド一覧'] = (sheets && sheets['グリッド一覧']) ||
     createFakeSheet([api.GRID_SHEET_HEADERS].concat(SURVEY_CELLS.map(function(r) { return r.slice(); })));
   if (sheets && sheets['調査ログ']) s.sheets['調査ログ'] = sheets['調査ログ'];
+  Object.keys(props || {}).forEach(function(k) { s.properties[k] = props[k]; });
   api.surveyEmptyCells();
   return s;
 };
@@ -715,6 +716,41 @@ check('再実行しても確認済みのセルは叩き直さない', second.goo
   second.googleRequestCount() + '回');
 check('再実行で調査ログが増えない', second.sheets['調査ログ'].rows().length === logRows.length,
   second.sheets['調査ログ'].rows().length + '行');
+
+// --- 試算モード: 叩く前に消費コール数だけ知る ---
+// 請求先を紐付けた本番キーに切り替えた直後など、消費量を確定させてから実行したい場合に使う。
+const dryRun = runSurvey(null, { SURVEY_MAX_CALLS: '0' });
+check('SURVEY_MAX_CALLS=0 ならGoogleへのリクエストが1件も発生しない',
+  dryRun.googleRequestCount() === 0, dryRun.googleRequestCount() + '回');
+check('試算モードは「実行したら何コール要るか」を報告する',
+  dryRun.logs.some(function(l) { return l.indexOf('実行すれば 2 コール消費します') !== -1; }),
+  dryRun.logs.filter(function(l) { return l.indexOf('確認対象:') === 0; })[0] || '(報告なし)');
+check('試算モードでは調査ログに行を追加しない',
+  !dryRun.sheets['調査ログ'] || dryRun.sheets['調査ログ'].rows().length <= 1,
+  dryRun.sheets['調査ログ'] ? dryRun.sheets['調査ログ'].rows().length + '行' : 'シートなし');
+check('試算モードではPro枠も消費しない',
+  !dryRun.properties[proQuota.countProp], String(dryRun.properties[proQuota.countProp]));
+
+// --- 上限を決めて少しずつ実行する ---
+const capped = runSurvey(null, { SURVEY_MAX_CALLS: '1' });
+check('SURVEY_MAX_CALLS で1回の実行を指定件数に抑えられる',
+  capped.googleRequestCount() === 1, capped.googleRequestCount() + '回');
+check('上限で止まった旨をログに出す',
+  capped.logs.some(function(l) { return l.indexOf('SURVEY_MAX_CALLS') !== -1 && l.indexOf('達したため中断') !== -1; }));
+
+// --- 探索済みのセルは調査しない ---
+const doneCells = [
+  [401, 35.900, 140.100, 717, '処理済み', 0, '', 0.01],
+  [402, 35.910, 140.110, 717, '未処理', 0, '', 0.01]
+];
+const withDone = runSurvey({
+  'グリッド一覧': createFakeSheet([api.GRID_SHEET_HEADERS].concat(doneCells.map(function(r) { return r.slice(); })))
+}, null);
+check('探索済みのセルは調査対象から外れる(結果が分かっているため)',
+  withDone.googleRequestCount() === 1, withDone.googleRequestCount() + '回');
+check('対象外にした件数を報告する',
+  withDone.logs.some(function(l) { return l.indexOf('探索済みのため対象外: 1セル') !== -1; }),
+  withDone.logs.filter(function(l) { return l.indexOf('探索済みのため対象外') === 0; })[0] || '(報告なし)');
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);

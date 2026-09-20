@@ -135,15 +135,10 @@ function crawlAllGrids() {
     });
   };
 
-  const DONE_STATUSES = [
-    '処理済み', '処理済み(A=0のため省略)', '処理済み(プローブ)',
-    '密集(タイプ分割済み)', '密集(分割済み)', '要確認(上限到達)'
-  ];
-
   // 早期リターン: 未処理のグリッドが1件も残っていなければ、API呼び出しをせず終了する
   // (トリガーによる無駄な自動実行のコストを防ぐため)
   const remainingCount = gridValues.filter(function(r) {
-    return DONE_STATUSES.indexOf(r[GRID_COL_STATUS - 1]) === -1;
+    return GRID_DONE_STATUSES.indexOf(r[GRID_COL_STATUS - 1]) === -1;
   }).length;
   if (remainingCount === 0) {
     Logger.log('未処理のグリッドはありません。すべて完了済みのため、今回は何もせず終了します。');
@@ -154,7 +149,7 @@ function crawlAllGrids() {
   for (let i = 0; i < gridValues.length; i++) {
     const row = gridValues[i];
     const status = row[GRID_COL_STATUS - 1];
-    if (DONE_STATUSES.indexOf(status) !== -1) continue; // 完了済みのグリッドはスキップ
+    if (GRID_DONE_STATUSES.indexOf(status) !== -1) continue; // 完了済みのグリッドはスキップ
 
     if (new Date().getTime() - startTime > MAX_RUNTIME_MS) {
       Logger.log('実行時間の上限に近づいたため、ここで停止します。続きは再実行してください。');
