@@ -87,6 +87,28 @@ function auditGridOverlap() {
   if (overlaps.length > 0 && unprocessedOverlaps.length === 0) {
     Logger.log('  → 重複はすべて処理済みの行同士(過去に消費したコールなので、今から直しても払い戻せない)。');
   }
+
+  // --- 3. 未処理どうしの重複を「クラスタ」単位でまとめ、実際の規模を見積もる ---
+  // ペアのままでは同じセルが何組にも重複して数えられるため、繋がっている
+  // セルをひとまとめにし、「1クラスタにつき1件残す」場合に浮くコール数を出す。
+  if (unprocessedOverlaps.length > 0) {
+    const clusters = findOverlapClusters(unprocessedOverlaps.map(function(o) {
+      return { aId: o.aId, bId: o.bId };
+    }));
+    const affectedRowCount = clusters.reduce(function(sum, c) { return sum + c.length; }, 0);
+    const savableCalls = affectedRowCount - clusters.length;
+    const totalUnprocessed = cells.filter(function(c) { return isUnprocessed(c.gridId); }).length;
+
+    Logger.log(
+      '未処理どうしの重複クラスタ: ' + clusters.length + '個' +
+      '(関与するセル数: ' + affectedRowCount + '件 / 全体の未処理セル数: ' + totalUnprocessed + '件)'
+    );
+    Logger.log('  クラスタサイズの分布: ' + clusterSizeSummary(clusters));
+    Logger.log(
+      '  → 各クラスタから1件だけ残して他を検索せずに済ませる場合、約' + savableCalls +
+      'コール分の無駄を避けられる(その代わり、重複していない残り部分の店を取りこぼす)。'
+    );
+  }
 }
 
 /**

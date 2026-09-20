@@ -1289,9 +1289,11 @@ overlapStub.sheets['グリッド一覧'] = createFakeSheet([
   [2, REF_LAT_15, 139.95, 700, '処理済み', 0, '', api.GRID_STEP],
   // C: 階層0・未処理・現行ロジックと一致する正しい半径(不一致なし)
   [3, REF_LAT_15, 140.00, CORRECT_RADIUS_15, '未処理', 0, '', api.GRID_STEP],
-  // D・E: 階層1・未処理どうしで重なる検索円(重複率20%以上)
-  [10, 35.80, 139.90, 500, '未処理', 1, 1, 0.005],
-  [11, 35.80, 139.9005, 300, '未処理', 1, 1, 0.005],
+  // D・E・F: 階層1・未処理どうしの鎖状の重複(D-E、E-Fは直接重なるが、D-Fは
+  // 直接は重ならない → クラスタ判定で3件が1つにまとまることを確認するため)
+  [10, 35.80, 139.90, 200, '未処理', 1, 1, 0.005],
+  [11, 35.80, 139.9018, 200, '未処理', 1, 1, 0.005],
+  [12, 35.80, 139.9036, 200, '未処理', 1, 1, 0.005],
   // G・H: 階層1・処理済みどうしで重なる検索円(過去のコールなので参考情報のみ)
   [20, 35.83, 139.95, 500, '処理済み(プローブ)', 1, 2, 0.005],
   [21, 35.83, 139.9505, 300, '処理済み(プローブ)', 1, 2, 0.005]
@@ -1304,11 +1306,16 @@ check('半径不一致が2件検出される(A・Bの700m)',
 check('不一致のうち未処理は1件(Aのみ、Bは処理済みなので除外)',
   overlapStub.logs.some(function(l) { return l.indexOf('うち未処理: 1件') !== -1; }));
 check('APIコールは一切発生しない', overlapStub.requestCount() === 0);
-check('重複率20%以上のペアが2組検出される(D-E、G-H)',
-  overlapStub.logs.some(function(l) { return l.indexOf('重複率20%以上のセルペア: 2組') !== -1; }),
+check('重複率20%以上のペアが3組検出される(D-E、E-F、G-H)',
+  overlapStub.logs.some(function(l) { return l.indexOf('重複率20%以上のセルペア: 3組') !== -1; }),
   overlapStub.logs.filter(function(l) { return l.indexOf('重複率20%以上のセルペア') === 0; })[0]);
-check('うち両方未処理のペアは1組(D-Eのみ)',
-  overlapStub.logs.some(function(l) { return l.indexOf('うち両方が未処理: 1組') !== -1; }));
+check('うち両方未処理のペアは2組(D-E、E-F)',
+  overlapStub.logs.some(function(l) { return l.indexOf('うち両方が未処理: 2組') !== -1; }));
+check('D・E・Fは鎖状につながって1クラスタ(3件)にまとまる(直接は重ならないD-Fも同じ統合単位)',
+  overlapStub.logs.some(function(l) { return l.indexOf('未処理どうしの重複クラスタ: 1個(関与するセル数: 3件') !== -1; }),
+  overlapStub.logs.filter(function(l) { return l.indexOf('未処理どうしの重複クラスタ') === 0; })[0]);
+check('1クラスタに1件残す場合の節約コール数が2と報告される(3件→1件で2件浮く)',
+  overlapStub.logs.some(function(l) { return l.indexOf('約2コール分の無駄を避けられる') !== -1; }));
 
 // --- 修正: 未処理の階層0セルだけ半径を直す ---
 api.fixUnprocessedRootRadius();
@@ -1320,7 +1327,7 @@ check('処理済みセルBの半径は変更されない(過去のコールを�
 check('既に正しいセルCは変更されない(冪等)',
   fixedGrid[3][3] === CORRECT_RADIUS_15, '半径=' + fixedGrid[3][3]);
 check('階層1のセルは対象外(半径そのまま)',
-  fixedGrid[4][3] === 500 && fixedGrid[5][3] === 300);
+  fixedGrid[4][3] === 200 && fixedGrid[5][3] === 200 && fixedGrid[6][3] === 200);
 check('修正件数が1件だとログに出る',
   overlapStub.logs.some(function(l) { return l.indexOf('未処理の階層0セル 1件の半径を修正しました') !== -1; }));
 check('修正はAPIコールを発生させない', overlapStub.requestCount() === 0);
