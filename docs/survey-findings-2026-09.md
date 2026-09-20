@@ -44,7 +44,7 @@ Pro枠 **3,370 / 5,000** を使用。**Enterprise枠は1コールも消費して
 
 | 検証 | 母集団 | 結果 |
 |---|---|---|
-| API差分（`compareProbeSetWithTypeGroups`） | 60件 | 取りこぼし **0件** |
+| API差分（`comparePlaceTypeSetWithTypeGroups`） | 60件 | 取りこぼし **0件** |
 | シート実測（`surveyAllCells`） | **7,027件** | 被覆率 **100.0%** |
 
 **166種のカタログも A/B/C/D の4グループも、通常の探索には不要。**
@@ -170,7 +170,7 @@ OSM の対象エリア内の飲食系POIは2,515件。Googleは部分的なク�
 |---|---|
 | `PlaceTypeCatalog.js`（166種の手書きカタログ） | 階層6の65マス用にのみ残す |
 | `TypeGroupCellSearch.js`（4グループ + 7分割） | 同上（通常経路からは外れる） |
-| `ProbeFirstCellSearch.js` + `SearchStrategyMode.js` | 1本に統合し、切替フラグを撤去 |
+| `PlaceTypeSetCellSearch.js`(旧 ProbeFirstCellSearch.js) + `SearchStrategyMode.js` | 1本に統合し、切替フラグを撤去(のち完了) |
 | `GridSubdivision.js` の事後分割 | 調査結果で事前に確定済み |
 
 ### 4-2. 階層6で飽和した65マスの扱い
@@ -202,7 +202,7 @@ OSM の対象エリア内の飲食系POIは2,515件。Googleは部分的なク�
 
 Pro段には `rating` も `websiteUri` も無い。書き込むと評価とHPが空の行ができ、
 **Place ID の重複除去で本番クロールが二度とその店の営業データを取りに行かなくなる。**
-`compareProbeSetWithTypeGroups` は旧実装（Enterprise段）で書き込んでいたため、
+`comparePlaceTypeSetWithTypeGroups`(当時は compareProbeSetWithTypeGroups)は旧実装（Enterprise段）で書き込んでいたため、
 段を下げる際に書き込みを廃止した。
 
 ### 自前のカウンタはGCPプロジェクトを区別しない
@@ -234,8 +234,8 @@ Pro段には `rating` も `websiteUri` も無い。書き込むと評価とHPが
 |---|---|---|
 | `surveyAllCells` | 全マスの密度とタイプを測る | 1マス1コール（Pro） |
 | `surveySaturatedCells` | 飽和マスを4分割。実行のたびに1段深く掘る | 親1つ4コール（Pro） |
-| `compareProbeSetWithTypeGroups` | 傘型プローブと4グループの差分検証 | 1マス最大5コール（Pro） |
-| `auditProbeSetCoverage` | シート実測から被覆率と最小被覆集合 | **0コール** |
+| `comparePlaceTypeSetWithTypeGroups` | プレイスタイプ集合と4グループの差分検証 | 1マス最大5コール（Pro） |
+| `auditPlaceTypeSetCoverage` | シート実測から被覆率と最小被覆集合 | **0コール** |
 | `surveyEmptyCells` | OSMが0件と見たマスの実地確認（結果的に不要に） | 1マス1コール（Pro） |
 | `checkMonthlyApiUsage` | SKU別の消費確認 | **0コール** |
 

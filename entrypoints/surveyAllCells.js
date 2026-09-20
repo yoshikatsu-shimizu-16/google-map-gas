@@ -120,7 +120,7 @@ function surveyAllCells() {
     }
     const cell = targets[i];
     const result = callSearchNearby(
-      apiKey, PLACE_SURVEY_FIELD_MASK, PLACE_TYPE_PROBE_SET, cell.lat, cell.lng, cell.radius);
+      apiKey, PLACE_SURVEY_FIELD_MASK, PLACE_TYPE_SEARCH_SET, cell.lat, cell.lng, cell.radius);
 
     if (!result.ok) {
       if (result.quotaExceeded) {
@@ -281,7 +281,7 @@ function reportAreaSurveyDensity(cellSheet) {
  * カタログ(166種)のうち何種が実在するかも報告する。刈り込みの判断材料。
  *
  * 集計そのものは lib/catalog/PlaceTypeCoverageAnalysis.js の純関数を使う
- * (entrypoints/auditProbeSetCoverage.js と同じロジック。母集団が違うだけ)。
+ * (entrypoints/auditPlaceTypeSetCoverage.js と同じロジック。母集団が違うだけ)。
  *
  * @param {Sheet} placeSheet
  * @returns {void}
@@ -296,7 +296,7 @@ function reportAreaSurveyTypes(placeSheet) {
     .filter(function(types) { return types.length > 0; });
   if (typeRows.length === 0) return;
 
-  const summary = summarizeProbeCoverage(typeRows, PLACE_TYPE_PROBE_SET, ALL_SEARCHABLE_PLACE_TYPES);
+  const summary = summarizePlaceTypeSetCoverage(typeRows, PLACE_TYPE_SEARCH_SET, ALL_SEARCHABLE_PLACE_TYPES);
   const observedCatalogTypes = ALL_SEARCHABLE_PLACE_TYPES.length - summary.catalogTypesNeverObserved.length;
 
   Logger.log('--- 累計: タイプの実測(' + typeRows.length + '件の店) ---');
@@ -305,7 +305,7 @@ function reportAreaSurveyTypes(placeSheet) {
   Logger.log('  カタログ166種のうち実在が確認できたもの: ' + observedCatalogTypes + '種' +
     ' / 1度も出現しないもの: ' + summary.catalogTypesNeverObserved.length + '種');
 
-  const cover = findMinimalProbeCover(typeRows, ALL_SEARCHABLE_PLACE_TYPES, INCLUDED_TYPES_MAX_PER_REQUEST);
+  const cover = findMinimalPlaceTypeCover(typeRows, ALL_SEARCHABLE_PLACE_TYPES, INCLUDED_TYPES_MAX_PER_REQUEST);
   Logger.log('  最小被覆集合(貪欲法):');
   let cumulative = 0;
   cover.cover.forEach(function(entry, index) {

@@ -35,7 +35,7 @@
  *       https://developers.google.com/maps/documentation/places/web-service/nearby-search
  *       の includedTypes の項)を利用すると、'restaurant' のような傘型(umbrella)1つで
  *       primaryType が 'ramen_restaurant' の店もヒットする。そこでプローブ集合
- *       (PLACE_TYPE_PROBE_SET、lib/catalog/PlaceTypeProbeSet.js)で1回だけ検索し、
+ *       (PLACE_TYPE_SEARCH_SET、lib/catalog/PlaceTypeSearchSet.js)で1回だけ検索し、
  *       20件未満(0件を含む)ならそのセルを確定する。20件ちょうど(飽和の疑いがある)
  *       ときは、下記(2)の空間分割(四分木分割)に回す。
  *
@@ -45,7 +45,7 @@
  *       全域を傘型プローブで実測した結果(docs/survey-findings-2026-09.md 2-5節)、
  *       飽和マス1つあたりのコストは「空間分割=5コール」「タイプ分割=11コール」で
  *       空間分割の方が安いと判明したため、通常経路からはタイプ分割を外し、
- *       プローブ1コール→飽和なら空間分割、に一本化した(lib/crawler/ProbeFirstCellSearch.js)。
+ *       プレイスタイプ集合1コール→飽和なら空間分割、に一本化した(lib/crawler/PlaceTypeSetCellSearch.js)。
  *
  *       166種カタログ・4グループの定義(lib/catalog/PlaceTypeCatalog.js)と、それを使った
  *       探索手順(lib/crawler/TypeGroupCellSearch.js)は削除していない。空間分割でも
@@ -57,28 +57,28 @@
  *       当初提案していた「密集セルでのAPI差分」だけでは、差分が「プローブ集合の
  *       被覆漏れ」なのか「20件の壁による切り捨て」なのかを区別できないため
  *       (密集セルは定義上 maxResultCount で切り捨てられる)。
- *         1. entrypoints/auditProbeSetCoverage.js(APIコール0) — 旧方式(4グループ)で
+ *         1. entrypoints/auditPlaceTypeSetCoverage.js(APIコール0) — 旧方式(4グループ)で
  *            毎セル全166タイプを検索していた時代に集めた行は、取りこぼしのない母集団に
  *            なっている(20件の壁に当たった分を除く)。各行の「全タイプ」がプローブ集合と
  *            交差するかを集計すれば、それがそのまま被覆判定になる。
- *         2. entrypoints/compareProbeSetWithTypeGroups.js(5〜25コール) — 1.の裏取りとして、
+ *         2. entrypoints/comparePlaceTypeSetWithTypeGroups.js(5〜25コール) — 1.の裏取りとして、
  *            実際に密集グリッド1つでプローブ集合とA/B/C/Dの両方を叩き、Place ID差分を
  *            確認する。
  *       検証結果(導出日 / 母集団行数 / 被覆率 / 未観測タイプ一覧)は
- *       lib/catalog/PlaceTypeProbeSet.js の冒頭コメントに固定して記録する
+ *       lib/catalog/PlaceTypeSearchSet.js の冒頭コメントに固定して記録する
  *       (このファイルの重複管理を避けるため、ここには転記しない)。
  *       ただし独立検証としての規模はAPI差分(2.)の母集団60件にとどまる。シート実測
  *       (1.)による被覆率100%はプローブ集合自身の結果に対する自己参照であり、地域全体の
  *       網羅率を意味しない。詳細はdocs/survey-next-actions-2026-09-20.md 2-1節を参照。
  *
  *       ----- 監査の自己循環に関する注意(最重要) -----
- *       auditProbeSetCoverage の証拠能力は「旧方式(4グループ)で集めた行」に由来する。
+ *       auditPlaceTypeSetCoverage の証拠能力は「旧方式(4グループ)で集めた行」に由来する。
  *       通常経路をプローブ集合に統一した現在、新しく集まる行はプローブ集合に一致する
  *       ものだけになるため、この監査を再度回すと被覆率が意味もなく100%に近づいて見える
  *       (自己循環)。この監査は**旧方式のデータに対して実行して根拠を確定させるための
  *       もの**であり、切替後に集まった行の定点観測には使えない。切替後の被覆漏れ検知は
- *       lib/crawler/ProbeFirstCellSearch.js が担う(新規取得placeの全件に
- *       isCoveredByProbeSet をかけ、falseなら警告ログと stats.uncoveredPlaces に計上する。
+ *       lib/crawler/PlaceTypeSetCellSearch.js が担う(新規取得placeの全件に
+ *       isCoveredByPlaceTypeSet をかけ、falseなら警告ログと stats.uncoveredPlaces に計上する。
  *       飽和・非飽和を問わず全件チェックするため、運用中に追加コールなしで穴が
  *       表面化する)。
  *

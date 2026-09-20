@@ -1,11 +1,11 @@
 /**
- * プローブ集合と被覆分析(純関数)の検証スクリプト(ローカル実行用)。
+ * プレイスタイプ集合と被覆分析(純関数)の検証スクリプト(ローカル実行用)。
  *
- *   node tools/verifyProbeSetCoverage.js
+ *   node tools/verifyPlaceTypeSetCoverage.js
  *
- * lib/catalog/PlaceTypeProbeSet.js と lib/catalog/PlaceTypeCoverageAnalysis.js は
+ * lib/catalog/PlaceTypeSearchSet.js と lib/catalog/PlaceTypeCoverageAnalysis.js は
  * Sheet/Logger/API に一切依存しない純粋な計算ロジックのため、ここでAPIコールも
- * スプレッドシートも使わずに検証できる。auditProbeSetCoverage だけは Sheet/Logger を
+ * スプレッドシートも使わずに検証できる。auditPlaceTypeSetCoverage だけは Sheet/Logger を
  * 読み書きするため、tools/gasStubs.js のスタブ上で動かして確認する。
  */
 const { loadDeployedSource, createFakeSheet, installGasGlobals } = require('./gasStubs');
@@ -21,38 +21,38 @@ console.log('\nデプロイ対象 ' + files.length + ' ファイルを結合し�
 
 const api = new Function(source + `
   return {
-    PLACE_TYPE_PROBE_SET: PLACE_TYPE_PROBE_SET,
-    isCoveredByProbeSet: isCoveredByProbeSet,
+    PLACE_TYPE_SEARCH_SET: PLACE_TYPE_SEARCH_SET,
+    isCoveredByPlaceTypeSet: isCoveredByPlaceTypeSet,
     parsePlaceTypesCell: parsePlaceTypesCell,
-    summarizeProbeCoverage: summarizeProbeCoverage,
-    findMinimalProbeCover: findMinimalProbeCover,
+    summarizePlaceTypeSetCoverage: summarizePlaceTypeSetCoverage,
+    findMinimalPlaceTypeCover: findMinimalPlaceTypeCover,
     ALL_SEARCHABLE_PLACE_TYPES: ALL_SEARCHABLE_PLACE_TYPES,
     INCLUDED_TYPES_MAX_PER_REQUEST: INCLUDED_TYPES_MAX_PER_REQUEST,
     PLACE_DATA_HEADERS: PLACE_DATA_HEADERS,
-    auditProbeSetCoverage: auditProbeSetCoverage
+    auditPlaceTypeSetCoverage: auditPlaceTypeSetCoverage
   };
 `)();
 
 // =====================================================================
-console.log('\n[1] PLACE_TYPE_PROBE_SET そのものの健全性');
+console.log('\n[1] PLACE_TYPE_SEARCH_SET そのものの健全性');
 // =====================================================================
 check('要素数が INCLUDED_TYPES_MAX_PER_REQUEST 以下',
-  api.PLACE_TYPE_PROBE_SET.length <= api.INCLUDED_TYPES_MAX_PER_REQUEST,
-  api.PLACE_TYPE_PROBE_SET.length + '種 / 上限' + api.INCLUDED_TYPES_MAX_PER_REQUEST + '種');
+  api.PLACE_TYPE_SEARCH_SET.length <= api.INCLUDED_TYPES_MAX_PER_REQUEST,
+  api.PLACE_TYPE_SEARCH_SET.length + '種 / 上限' + api.INCLUDED_TYPES_MAX_PER_REQUEST + '種');
 check('重複がない',
-  new Set(api.PLACE_TYPE_PROBE_SET).size === api.PLACE_TYPE_PROBE_SET.length);
+  new Set(api.PLACE_TYPE_SEARCH_SET).size === api.PLACE_TYPE_SEARCH_SET.length);
 check('全要素が ALL_SEARCHABLE_PLACE_TYPES に含まれる(includedTypes は Table A のみという制約)',
-  api.PLACE_TYPE_PROBE_SET.every(function(t) { return api.ALL_SEARCHABLE_PLACE_TYPES.indexOf(t) !== -1; }));
+  api.PLACE_TYPE_SEARCH_SET.every(function(t) { return api.ALL_SEARCHABLE_PLACE_TYPES.indexOf(t) !== -1; }));
 
 // =====================================================================
-console.log('\n[2] isCoveredByProbeSet');
+console.log('\n[2] isCoveredByPlaceTypeSet');
 // =====================================================================
 check("['ramen_restaurant','restaurant','food'] → true",
-  api.isCoveredByProbeSet(['ramen_restaurant', 'restaurant', 'food']) === true);
+  api.isCoveredByPlaceTypeSet(['ramen_restaurant', 'restaurant', 'food']) === true);
 check("['point_of_interest','establishment'] → false",
-  api.isCoveredByProbeSet(['point_of_interest', 'establishment']) === false);
-check('[] → false', api.isCoveredByProbeSet([]) === false);
-check('undefined → false', api.isCoveredByProbeSet(undefined) === false);
+  api.isCoveredByPlaceTypeSet(['point_of_interest', 'establishment']) === false);
+check('[] → false', api.isCoveredByPlaceTypeSet([]) === false);
+check('undefined → false', api.isCoveredByPlaceTypeSet(undefined) === false);
 
 // =====================================================================
 console.log('\n[3] parsePlaceTypesCell');
@@ -66,7 +66,7 @@ check('未定義セル → []', JSON.stringify(api.parsePlaceTypesCell(undefined
 check('null セル → []', JSON.stringify(api.parsePlaceTypesCell(null)) === JSON.stringify([]));
 
 // =====================================================================
-console.log('\n[4] findMinimalProbeCover (既知の手製行列)');
+console.log('\n[4] findMinimalPlaceTypeCover (既知の手製行列)');
 // =====================================================================
 // 行0-2: 'a' で覆える(3行) / 行3: 'b'のみ / 行4: 'c'のみ / 行5: カタログ型を持たない(uncovered)
 const matrixRows = [
@@ -77,7 +77,7 @@ const matrixRows = [
 ];
 const candidateTypes = ['a', 'b', 'c'];
 
-const cover1 = api.findMinimalProbeCover(matrixRows, candidateTypes, 3);
+const cover1 = api.findMinimalPlaceTypeCover(matrixRows, candidateTypes, 3);
 check("最初に選ばれるのは 'a'(3行を新規被覆する最良の候補)",
   cover1.cover[0] && cover1.cover[0].type === 'a' && cover1.cover[0].newlyCovered === 3,
   JSON.stringify(cover1.cover));
@@ -89,43 +89,43 @@ check('累積被覆数が5行(行5はカタログ型を持たないため被覆�
 check('カタログ型を持たない行(5)が uncoveredRowIndexes に出る',
   cover1.uncoveredRowIndexes.indexOf(5) !== -1, JSON.stringify(cover1.uncoveredRowIndexes));
 
-const cover2 = api.findMinimalProbeCover(matrixRows, candidateTypes, 3);
+const cover2 = api.findMinimalPlaceTypeCover(matrixRows, candidateTypes, 3);
 check('2回実行しても同一の結果になる(決定性)',
   JSON.stringify(cover1) === JSON.stringify(cover2));
 
-const coverLimited = api.findMinimalProbeCover(matrixRows, candidateTypes, 1);
+const coverLimited = api.findMinimalPlaceTypeCover(matrixRows, candidateTypes, 1);
 check('maxSize=1 で打ち切られる', coverLimited.cover.length === 1, coverLimited.cover.length + '件');
 
 // 新規被覆数・総ヒット数が完全に同数のタイブレークを確認する専用の行列
 const tieRows = [['y'], ['z']];
-const tieCover = api.findMinimalProbeCover(tieRows, ['z', 'y'], 2);
+const tieCover = api.findMinimalPlaceTypeCover(tieRows, ['z', 'y'], 2);
 check('新規被覆数・総ヒット数が同数のときは辞書順で選ばれる(y→z)',
   tieCover.cover.map(function(c) { return c.type; }).join(',') === 'y,z',
   tieCover.cover.map(function(c) { return c.type; }).join(','));
 
 // =====================================================================
-console.log('\n[5] summarizeProbeCoverage');
+console.log('\n[5] summarizePlaceTypeSetCoverage');
 // =====================================================================
-const probeSetForSummary = ['a', 'b'];
+const placeTypeSetForSummary = ['a', 'b'];
 const catalogForSummary = ['a', 'b', 'c', 'd'];
 const summaryRows = [
   ['a'], ['a'], ['a', 'b'], ['b'], ['c'], ['store', 'point_of_interest']
 ];
-const summary = api.summarizeProbeCoverage(summaryRows, probeSetForSummary, catalogForSummary);
+const summary = api.summarizePlaceTypeSetCoverage(summaryRows, placeTypeSetForSummary, catalogForSummary);
 check('coveredCount が4(a / a / a,b / b の4行が被覆される)', summary.coveredCount === 4, 'coveredCount=' + summary.coveredCount);
 check("uncoveredRowIndexes に 'c'のみの行(4)と 'store'のみの行(5)が入る",
   summary.uncoveredRowIndexes.indexOf(4) !== -1 && summary.uncoveredRowIndexes.indexOf(5) !== -1,
   JSON.stringify(summary.uncoveredRowIndexes));
-check("soleCoverCountByProbeType['a'] が2('a'単独の行が2件)",
-  summary.soleCoverCountByProbeType['a'] === 2, JSON.stringify(summary.soleCoverCountByProbeType));
-check("hitCountByProbeType['b'] が2('a,b'の行と'b'の行)", summary.hitCountByProbeType['b'] === 2, JSON.stringify(summary.hitCountByProbeType));
+check("soleCoverCountByPlaceType['a'] が2('a'単独の行が2件)",
+  summary.soleCoverCountByPlaceType['a'] === 2, JSON.stringify(summary.soleCoverCountByPlaceType));
+check("hitCountByPlaceType['b'] が2('a,b'の行と'b'の行)", summary.hitCountByPlaceType['b'] === 2, JSON.stringify(summary.hitCountByPlaceType));
 check("catalogTypesNeverObserved に 'd' が入る(カタログにあるが1件も出現しない)",
   summary.catalogTypesNeverObserved.indexOf('d') !== -1, JSON.stringify(summary.catalogTypesNeverObserved));
 check("observedNonCatalogTypes に 'store' が1件で記録される",
   summary.observedNonCatalogTypes['store'] === 1, JSON.stringify(summary.observedNonCatalogTypes));
 
 // =====================================================================
-console.log('\n[6] auditProbeSetCoverage(フェイクシートで通す。APIコールなし)');
+console.log('\n[6] auditPlaceTypeSetCoverage(フェイクシートで通す。APIコールなし)');
 // =====================================================================
 const stub = installGasGlobals({});
 stub.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
@@ -139,21 +139,21 @@ const buildRow = function(name, typesCell) {
   row[typesCol] = typesCell;
   return row;
 };
-dataSheet.appendRow(buildRow('被覆される店', api.PLACE_TYPE_PROBE_SET[0] + ', food'));
+dataSheet.appendRow(buildRow('被覆される店', api.PLACE_TYPE_SEARCH_SET[0] + ', food'));
 dataSheet.appendRow(buildRow('未移行の店(全タイプ空)', ''));
 dataSheet.appendRow(buildRow('被覆されない店', 'point_of_interest, establishment'));
 // スタブの SpreadsheetApp.openById が返す固定 spreadsheet はこの sheets オブジェクトを
 // そのまま参照しているため、ここに直接差し込めば getSheetByName('全飲食店データ') で拾える。
 stub.sheets['全飲食店データ'] = dataSheet;
 
-api.auditProbeSetCoverage();
+api.auditPlaceTypeSetCoverage();
 
 const healthLog = stub.logs.filter(function(l) { return l.indexOf('[1. 母集団の健全性]') === 0; })[0];
 check('母集団の健全性ログが出力される', !!healthLog, healthLog);
 check('「全タイプ」が空の行(1件)は未被覆ではなく判定対象外に数えられる',
   !!healthLog && healthLog.indexOf('判定対象: 2') !== -1, healthLog);
 
-const coverageLog = stub.logs.filter(function(l) { return l.indexOf('[3. 現行プローブ集合の被覆率]') === 0; })[0];
+const coverageLog = stub.logs.filter(function(l) { return l.indexOf('[3. 現行プレイスタイプ集合の被覆率]') === 0; })[0];
 check('被覆率ログが判定対象2行のうち1行被覆になる(空行を分母に含めない)',
   !!coverageLog && coverageLog.indexOf('1/2') !== -1, coverageLog);
 
@@ -181,12 +181,12 @@ legacyStub.sheets['全飲食店データ'] = createFakeSheet([
    'OPERATIONAL', '月曜日: 24時間営業', '', '', '', '', '', '', '', '', 'ChIJ_legacy']
 ]);
 
-api.auditProbeSetCoverage();
+api.auditPlaceTypeSetCoverage();
 
 const legacyWarning = legacyStub.logs.filter(function(l) { return l.indexOf('列がありません') !== -1; })[0];
 check('旧スキーマでは列が無い旨を報告して中断する', !!legacyWarning, legacyWarning);
 check('被覆率を算出しない(0%という誤った結果を出さない)',
-  legacyStub.logs.every(function(l) { return l.indexOf('[3. 現行プローブ集合の被覆率]') !== 0; }),
+  legacyStub.logs.every(function(l) { return l.indexOf('[3. 現行プレイスタイプ集合の被覆率]') !== 0; }),
   legacyStub.logs.filter(function(l) { return l.indexOf('[3.') === 0; }).join(' / ') || 'なし');
 check('places.types が後から追加された項目である旨を案内する',
   legacyStub.logs.some(function(l) { return l.indexOf('places.types') !== -1; }));
@@ -198,7 +198,7 @@ const emptyTypesSheet = createFakeSheet([api.PLACE_DATA_HEADERS]);
 emptyTypesSheet.appendRow(buildRow('移行直後の店', ''));
 emptyTypesStub.sheets['全飲食店データ'] = emptyTypesSheet;
 
-api.auditProbeSetCoverage();
+api.auditPlaceTypeSetCoverage();
 
 check('全行の「全タイプ」が空なら、理由を添えて中断する',
   emptyTypesStub.logs.some(function(l) { return l.indexOf('判定に使える行が0件です') === 0 && l.indexOf('places.types') !== -1; }),

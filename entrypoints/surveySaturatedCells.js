@@ -98,7 +98,7 @@ function surveySaturatedCells() {
     for (let c = 0; c < children.length; c++) {
       const child = children[c];
       const result = callSearchNearby(
-        apiKey, PLACE_SURVEY_FIELD_MASK, PLACE_TYPE_PROBE_SET, child.lat, child.lng, child.radius);
+        apiKey, PLACE_SURVEY_FIELD_MASK, PLACE_TYPE_SEARCH_SET, child.lat, child.lng, child.radius);
       if (!result.ok) {
         if (result.quotaExceeded) {
           quotaHit = true;

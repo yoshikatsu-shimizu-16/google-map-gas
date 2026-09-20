@@ -1,22 +1,22 @@
 /**
  * [エントリーポイント/確認用]
- * 「全飲食店データ」シートの 店名 / 全タイプ 列を読み、現行のプローブ集合
- * (PLACE_TYPE_PROBE_SET)の被覆率と、貪欲法による最小被覆集合をログ出力する。
+ * 「全飲食店データ」シートの 店名 / 全タイプ 列を読み、現行のプレイスタイプ集合
+ * (PLACE_TYPE_SEARCH_SET)の被覆率と、貪欲法による最小被覆集合をログ出力する。
  * APIコールは一切行わない(0コール)。
  *
  * この監査が成立する理由: かつて crawlAllGrids が毎セル全166タイプ(A/B/C/D)を
  * 検索していた時代に集めた行は、取りこぼしのない母集団になっている
- * (20件の壁に当たった分を除く)。各行の「全タイプ」がプローブ集合と交差するかを
+ * (20件の壁に当たった分を除く)。各行の「全タイプ」がプレイスタイプ集合と交差するかを
  * 集計すれば、それがそのまま被覆判定になる。
  *
  * 重要な注意: この監査の証拠能力は「旧方式(4グループ)で集めた行」に由来する。
- * 通常経路をプローブ集合1コールへ一本化した現在、新しく集まる行はプローブ集合に
+ * 通常経路をプレイスタイプ集合1コールへ一本化した現在、新しく集まる行はプレイスタイプ集合に
  * 一致するデータしかなくなるため、この監査を再度回しても自己循環して無意味になる
  * (docs/survey-next-actions-2026-09-20.md 2-1節、docs/Overview.js のリスク表も参照)。
  *
  * @returns {void}
  */
-function auditProbeSetCoverage() {
+function auditPlaceTypeSetCoverage() {
   const scriptProps = PropertiesService.getScriptProperties();
   const spreadsheetId = scriptProps.getProperty('TARGET_SPREADSHEET_ID');
   if (!spreadsheetId) {
@@ -70,7 +70,7 @@ function auditProbeSetCoverage() {
   const nameIdx = nameCol - readFromCol;
   const typesIdx = typesCol - readFromCol;
 
-  Logger.log('===== プローブ集合 被覆監査(APIコール0) =====');
+  Logger.log('===== プレイスタイプ集合 被覆監査(APIコール0) =====');
 
   // --- 1. 母集団の健全性 ---
   const emptyRowCount = raw.filter(function(r) { return r[typesIdx] === '' || r[typesIdx] === undefined || r[typesIdx] === null; }).length;
@@ -105,10 +105,10 @@ function auditProbeSetCoverage() {
   );
 
   // --- 3. 現行プローブ集合の被覆率 ---
-  const summary = summarizeProbeCoverage(typeRows, PLACE_TYPE_PROBE_SET, ALL_SEARCHABLE_PLACE_TYPES);
+  const summary = summarizePlaceTypeSetCoverage(typeRows, PLACE_TYPE_SEARCH_SET, ALL_SEARCHABLE_PLACE_TYPES);
   const coverageRate = (summary.coveredCount / summary.rowCount * 100).toFixed(1);
   Logger.log(
-    '[3. 現行プローブ集合の被覆率] 被覆 ' + summary.coveredCount + '/' + summary.rowCount +
+    '[3. 現行プレイスタイプ集合の被覆率] 被覆 ' + summary.coveredCount + '/' + summary.rowCount +
     '行 (' + coverageRate + '%)'
   );
   const uncoveredSample = summary.uncoveredRowIndexes.slice(0, 30);
@@ -121,13 +121,13 @@ function auditProbeSetCoverage() {
   }
 
   // --- 4. プローブ型ごとのヒット数と単独被覆数 ---
-  Logger.log('[4. プローブ型ごとのヒット数と単独被覆数] (単独被覆=このタイプだけで被覆できていた行数)');
-  PLACE_TYPE_PROBE_SET.forEach(function(t) {
-    Logger.log('  ' + t + ': ' + summary.hitCountByProbeType[t] + '行 (単独 ' + summary.soleCoverCountByProbeType[t] + ')');
+  Logger.log('[4. プレイスタイプごとのヒット数と単独被覆数] (単独被覆=このタイプだけで被覆できていた行数)');
+  PLACE_TYPE_SEARCH_SET.forEach(function(t) {
+    Logger.log('  ' + t + ': ' + summary.hitCountByPlaceType[t] + '行 (単独 ' + summary.soleCoverCountByPlaceType[t] + ')');
   });
 
   // --- 5. 貪欲法の最小被覆集合 ---
-  const minimalCover = findMinimalProbeCover(typeRows, ALL_SEARCHABLE_PLACE_TYPES, INCLUDED_TYPES_MAX_PER_REQUEST);
+  const minimalCover = findMinimalPlaceTypeCover(typeRows, ALL_SEARCHABLE_PLACE_TYPES, INCLUDED_TYPES_MAX_PER_REQUEST);
   Logger.log('[5. 貪欲法の最小被覆集合] (上限 ' + INCLUDED_TYPES_MAX_PER_REQUEST + '種)');
   let cumulative = 0;
   minimalCover.cover.forEach(function(entry, i) {
