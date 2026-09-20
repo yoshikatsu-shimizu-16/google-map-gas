@@ -79,6 +79,7 @@ const api = new Function(source + `
     PLACE_SURVEY_FIELD_MASK: PLACE_SURVEY_FIELD_MASK,
     apiSkuOfFieldMask: apiSkuOfFieldMask,
     surveyEmptyCells: surveyEmptyCells,
+    checkMonthlyApiUsage: checkMonthlyApiUsage,
     SURVEY_LOG_HEADERS: SURVEY_LOG_HEADERS,
     PLACE_TYPE_PROBE_SET: PLACE_TYPE_PROBE_SET
   };
@@ -751,6 +752,29 @@ check('探索済みのセルは調査対象から外れる(結果が分かって
 check('対象外にした件数を報告する',
   withDone.logs.some(function(l) { return l.indexOf('探索済みのため対象外: 1セル') !== -1; }),
   withDone.logs.filter(function(l) { return l.indexOf('探索済みのため対象外') === 0; })[0] || '(報告なし)');
+
+// --- 使用量の表示はSKUごとに出す(合計だけでは逼迫具合が分からない) ---
+const usageStub = installGasGlobals({});
+usageStub.properties[proQuota.countProp] = '154';
+usageStub.properties[proQuota.monthProp] = '2026-09';
+usageStub.properties[entQuota.countProp] = '1000';
+usageStub.properties[entQuota.monthProp] = '2026-09';
+api.checkMonthlyApiUsage();
+check('Pro段の消費と残りを表示する',
+  usageStub.logs.some(function(l) { return l.indexOf('154 / 5000') !== -1 && l.indexOf('残り 4846') !== -1; }),
+  usageStub.logs.filter(function(l) { return l.indexOf('調査') !== -1; })[0] || '(表示なし)');
+check('Enterprise段の消費と残りを表示する',
+  usageStub.logs.some(function(l) { return l.indexOf('1000 / 1000') !== -1 && l.indexOf('残り 0') !== -1; }),
+  usageStub.logs.filter(function(l) { return l.indexOf('営業') !== -1; })[0] || '(表示なし)');
+
+// 先月のカウントが残っていても今月は0として表示する
+const staleStub = installGasGlobals({});
+staleStub.properties[entQuota.countProp] = '999';
+staleStub.properties[entQuota.monthProp] = '2026-08'; // スタブの formatDate は 2026-09 を返す
+api.checkMonthlyApiUsage();
+check('先月のカウントは今月の消費として表示しない',
+  staleStub.logs.some(function(l) { return l.indexOf('0 / 1000') !== -1; }),
+  staleStub.logs.filter(function(l) { return l.indexOf('営業') !== -1; })[0] || '(表示なし)');
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);
