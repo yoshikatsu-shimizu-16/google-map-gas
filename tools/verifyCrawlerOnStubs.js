@@ -93,7 +93,9 @@ const api = new Function(source + `
     SUBDIVIDED_CELL_HEADERS: SUBDIVIDED_CELL_HEADERS,
     LEGACY_SUBDIVIDED_CELL_HEADERS: LEGACY_SUBDIVIDED_CELL_HEADERS,
     childCellsOf: childCellsOf,
-    CHILD_CELLS_PER_PARENT: CHILD_CELLS_PER_PARENT
+    CHILD_CELLS_PER_PARENT: CHILD_CELLS_PER_PARENT,
+    auditGridOverlap: auditGridOverlap,
+    fixUnprocessedRootRadius: fixUnprocessedRootRadius
   };
 `)();
 
@@ -1268,6 +1270,67 @@ check('未処理グリッドが無い早期リターンでもコールは増え�
   lockRun.requestCount() === 1, 'requestCount=' + lockRun.requestCount());
 check('早期リターン経路でもロックが解放される',
   lockRun.lock.hasLock() === false);
+
+// =====================================================================
+console.log('\n[15] グリッド一覧の整合性チェック(auditGridOverlap / fixUnprocessedRootRadius、Issue #24)');
+// =====================================================================
+const REF_LAT_15 = 35.855;
+const CORRECT_RADIUS_15 = api.cellCoverRadiusMeters(api.GRID_STEP, REF_LAT_15);
+
+const overlapStub = installGasGlobals({ respondToSearch: function() { return { places: [] }; } });
+overlapStub.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+overlapStub.sheets['グリッド一覧'] = createFakeSheet([
+  api.GRID_SHEET_HEADERS,
+  // A・B・Cは半径の不一致だけを見るための行なので、700m級の検索円どうしが
+  // 誤って重複判定されないよう、互いに0.05度(約4.5km)以上離す。
+  // A: 階層0・未処理・旧ロジックの決め打ち半径700m(不一致、修正対象)
+  [1, REF_LAT_15, 139.90, 700, '未処理', 0, '', api.GRID_STEP],
+  // B: 階層0・処理済み・同じ不一致だが既に処理済みなので修正対象外
+  [2, REF_LAT_15, 139.95, 700, '処理済み', 0, '', api.GRID_STEP],
+  // C: 階層0・未処理・現行ロジックと一致する正しい半径(不一致なし)
+  [3, REF_LAT_15, 140.00, CORRECT_RADIUS_15, '未処理', 0, '', api.GRID_STEP],
+  // D・E: 階層1・未処理どうしで重なる検索円(重複率20%以上)
+  [10, 35.80, 139.90, 500, '未処理', 1, 1, 0.005],
+  [11, 35.80, 139.9005, 300, '未処理', 1, 1, 0.005],
+  // G・H: 階層1・処理済みどうしで重なる検索円(過去のコールなので参考情報のみ)
+  [20, 35.83, 139.95, 500, '処理済み(プローブ)', 1, 2, 0.005],
+  [21, 35.83, 139.9505, 300, '処理済み(プローブ)', 1, 2, 0.005]
+]);
+
+api.auditGridOverlap();
+check('半径不一致が2件検出される(A・Bの700m)',
+  overlapStub.logs.some(function(l) { return l.indexOf('階層0セルの半径不一致: 2件') !== -1; }),
+  overlapStub.logs.filter(function(l) { return l.indexOf('階層0セルの半径不一致') === 0; })[0]);
+check('不一致のうち未処理は1件(Aのみ、Bは処理済みなので除外)',
+  overlapStub.logs.some(function(l) { return l.indexOf('うち未処理: 1件') !== -1; }));
+check('APIコールは一切発生しない', overlapStub.requestCount() === 0);
+check('重複率20%以上のペアが2組検出される(D-E、G-H)',
+  overlapStub.logs.some(function(l) { return l.indexOf('重複率20%以上のセルペア: 2組') !== -1; }),
+  overlapStub.logs.filter(function(l) { return l.indexOf('重複率20%以上のセルペア') === 0; })[0]);
+check('うち両方未処理のペアは1組(D-Eのみ)',
+  overlapStub.logs.some(function(l) { return l.indexOf('うち両方が未処理: 1組') !== -1; }));
+
+// --- 修正: 未処理の階層0セルだけ半径を直す ---
+api.fixUnprocessedRootRadius();
+const fixedGrid = overlapStub.sheets['グリッド一覧'].rows();
+check('未処理セルAの半径が現行計算値に修正される',
+  fixedGrid[1][3] === CORRECT_RADIUS_15, '修正後=' + fixedGrid[1][3]);
+check('処理済みセルBの半径は変更されない(過去のコールをやり直さない)',
+  fixedGrid[2][3] === 700, '半径=' + fixedGrid[2][3]);
+check('既に正しいセルCは変更されない(冪等)',
+  fixedGrid[3][3] === CORRECT_RADIUS_15, '半径=' + fixedGrid[3][3]);
+check('階層1のセルは対象外(半径そのまま)',
+  fixedGrid[4][3] === 500 && fixedGrid[5][3] === 300);
+check('修正件数が1件だとログに出る',
+  overlapStub.logs.some(function(l) { return l.indexOf('未処理の階層0セル 1件の半径を修正しました') !== -1; }));
+check('修正はAPIコールを発生させない', overlapStub.requestCount() === 0);
+
+// 修正後に監査し直すと、階層0の不一致はBの1件だけ(処理済みなので直せない)になる
+api.auditGridOverlap();
+const auditLogsAfterFix = overlapStub.logs.filter(function(l) { return l.indexOf('階層0セルの半径不一致') === 0; });
+check('修正後は不一致が1件(処理済みのBのみ)に減る',
+  auditLogsAfterFix[auditLogsAfterFix.length - 1].indexOf('階層0セルの半径不一致: 1件') !== -1,
+  auditLogsAfterFix[auditLogsAfterFix.length - 1]);
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);

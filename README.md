@@ -29,6 +29,7 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `lib/grid/GridGeometry.js` | 内部ヘルパー | 度⇄メートル変換とセルの外接円半径の導出(純関数のみ) |
 | `lib/grid/GridSubdivision.js` | 内部ヘルパー | 密集セルを4象限に等分する四分木分割 |
 | `lib/grid/GridSchemaMigration.js` | 内部ヘルパー | 「グリッド一覧」シートの列構成と、進捗を保持したままのスキーマ移行 |
+| `lib/grid/GridOverlapAnalysis.js` | 内部ヘルパー | 検索円どうしの重複率・階層0セルの半径不一致を判定する純関数(`auditGridOverlap`が使う) |
 | `lib/api/PlacesApiClient.js` | 内部ヘルパー | Places API (New) 呼び出しと月間APIコール上限の自前管理 |
 | `lib/api/PlaceSearchFieldMask.js` | 内部ヘルパー | searchNearby で取得するフィールドの指定(課金SKUの段を左右する) |
 | `lib/crawler/WebsiteCategory.js` | 内部ヘルパー | websiteUri を HP種別(なし/SNSのみ/グルメポータル/簡易ページ/自社HP)とドメインに分類 |
@@ -52,11 +53,12 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `tools/fetchOsmFoodPois.js` | ローカル用 | 上記の共有クエリをローカルから curl で叩き、結果をキャッシュする |
 | `tools/buildDensityMap.js` | ローカル用 | セル別の飲食店密度を見積もり、コール数を試算(`npm run density`) |
 | `tools/generateEmptyCellPrediction.js` | ローカル用 | 0件予測セルの一覧を GAS 用のソースとして生成(`npm run predict-empty`) |
+| `entrypoints/auditGridOverlap.js` | エントリーポイント | 「グリッド一覧」の半径不一致・検索円の重複をAPIコール0で点検し、未処理セルの半径不一致を修正する(`fixUnprocessedRootRadius`) |
 | `docs/survey-findings-2026-09.md` | ドキュメント | **全域調査の結果と次の一手**。実測値・確定した設計・踏んではいけない地雷 |
 | `docs/Overview.js` | ドキュメント | プロジェクト全体の設計意図(ワークフロー全体像・密集エリア対策・月間APIコール上限の理由) |
 | `appsscript.json` | 設定 | GASプロジェクトのマニフェスト(タイムゾーン・実行環境など) |
 | `.clasp.json.example` | 設定 | `clasp` 用設定のひな形(実際の `.clasp.json` は各自で作成し、Gitには含めません) |
-| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記29個の `.js` と `appsscript.json` のみに限定する設定 |
+| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記30個の `.js` と `appsscript.json` のみに限定する設定 |
 
 ## Google Drive 上の Apps Script プロジェクトとの接続方法
 
@@ -181,6 +183,8 @@ GASの「実行」メニューやトリガー設定画面に並ぶ関数のう�
 | `surveyEmptyCells` | `entrypoints/surveyEmptyCells.js` | 調査用 | OSMが0件と見た**未処理**セルを1コールずつ実地確認し「調査ログ」に記録 | **Pro段のため営業用の枠(1,000/月)を消費しない**。消費コール数=対象セル数。`SURVEY_MAX_CALLS=0` で試算のみ。本番シートに書き込まない |
 | `auditProbeSetCoverage` | `entrypoints/auditProbeSetCoverage.js` | 確認用 | 実測データからプローブ集合の被覆率・最小被覆集合をログ出力 | 副作用なし。**APIコール0**。旧方式(4グループ)で取得した行が必要(下記の前提を参照)。通常経路を一本化した現在は新規取得行に対して使えない(自己循環) |
 | `compareProbeSetWithTypeGroups` | `entrypoints/compareProbeSetWithTypeGroups.js` | 調査用 | 複数セルで傘型プローブ1コールと4グループ(A/B/C/D)の差分を検証し「調査ログ(傘型)」に記録 | **Pro段のため営業用の枠を消費しない**。1セル5コール(飽和なら1)。**「全飲食店データ」に書き込まない**(Pro段は評価もHPも無いため) |
+| `auditGridOverlap` | `entrypoints/auditGridOverlap.js` | 確認用 | 「グリッド一覧」の階層0セルの半径不一致・検索円の重複をログ出力 | 副作用なし。**APIコール0**。旧 `generateGridList` が半径700mを決め打ちしていた行(現行は約717m)や、旧ロジックの兄弟円どうしの重複を検出する |
+| `fixUnprocessedRootRadius` | `entrypoints/auditGridOverlap.js` | 手動実行 | 階層0セルのうち「未処理」の行だけ、半径を現行コードの計算値に修正 | **APIコール0**。処理済みの行には触らない(過去のコールをやり直すと無駄になるため) |
 
 ## 実行順序(初回セットアップ)
 
@@ -202,7 +206,8 @@ GAS には型チェックもコンパイルもなく、識別子の取り違え�
 
 ```bash
 npm test
-# = node tools/verifyGridGeometry.js && node tools/verifyProbeSetCoverage.js && node tools/verifyCrawlerOnStubs.js
+# = node tools/verifyGridGeometry.js && node tools/verifyGridOverlapAnalysis.js &&
+#   node tools/verifyProbeSetCoverage.js && node tools/verifyCrawlerOnStubs.js
 ```
 
 ```bash
@@ -212,6 +217,16 @@ node tools/verifyGridGeometry.js
 検索半径の導出、旧スキーマからの逆算、四分木分割がセル矩形を漏れなく覆うことを
 モンテカルロ法(30万点)で確認します。旧実装が親円の約4.5%を覆えていなかったことも
 対照として出力するため、分割ロジックを変更した際のリグレッション検知に使えます。
+
+```bash
+node tools/verifyGridOverlapAnalysis.js
+```
+
+`circleIntersectionArea` / `overlapFraction` / `findOverlappingPairs` /
+`findRootRadiusMismatches`(Sheet/Logger/APIに依存しない純関数)を検証します。
+旧ロジック(親円0.6倍の4円)が生成する隣接兄弟円は幾何的に重なる設計だったことを
+具体的な数値で確認し、半径700m決め打ちの行が現行コードの計算値(約717m)と
+十数m規模でズレることも確認します(`auditGridOverlap` の判定根拠、Issue #24)。
 
 ```bash
 node tools/verifyProbeSetCoverage.js
@@ -234,7 +249,9 @@ node tools/verifyCrawlerOnStubs.js
 密集セル(20件飽和)はA/B/C/Dへフォールバックせず1コールで空間分割に回ること、
 プローブ集合で被覆されない店が見つかったときに警告ログが出ることに加え、
 `LockService` による排他制御(他の実行が進行中なら待たずに終了し、正常終了時・
-早期リターン時のどちらでも確実にロックが解放されること)も確認します。
+早期リターン時のどちらでも確実にロックが解放されること)、`auditGridOverlap` /
+`fixUnprocessedRootRadius`(半径不一致・検索円の重複検出と、未処理セルだけの
+修正)も確認します。
 **デプロイ前にこちらを通しておくと、関数名の取り違えを実機で踏まずに済みます。**
 
 ## スキーマ移行とロールバック
