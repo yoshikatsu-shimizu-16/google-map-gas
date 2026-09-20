@@ -1,13 +1,10 @@
 /**
  * [エントリーポイント/確認用]
- * 課金SKUごとの月間APIコール数と、検索方式(SEARCH_STRATEGY)をログ出力する(動作確認用)。
+ * 課金SKUごとの月間APIコール数をログ出力する(動作確認用)。
  *
  * 無料枠はSKUごとに別勘定(Pro 5,000/月 / Enterprise 1,000/月)なので、合計値だけを見ても
  * どちらが逼迫しているか分からない。調査(Pro)と収穫(Enterprise)のどちらに余裕があるかを
  * 判断するための表示。
- *
- * 検索方式を併記するのは、コール数だけを見てもバーンレートの解釈を誤らないため
- * (probe方式は1セルあたりのコール数が type_groups より少ない)。
  *
  * 注意: このカウンタはスクリプト単位で、GCPプロジェクトを区別しない。APIキーを別の
  * プロジェクトに差し替えてもカウントは引き継がれる(逆に言えば、キーを替えただけでは
@@ -33,6 +30,4 @@ function checkMonthlyApiUsage() {
       ' (残り ' + Math.max(quota.limit - used, 0) + ')'
     );
   });
-
-  Logger.log('[検索方式] ' + describeSearchStrategy(getSearchStrategy()));
 }

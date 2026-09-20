@@ -4,46 +4,42 @@
  * Places API (New) の searchNearby エンドポイントで店舗を検索して
  * 「全飲食店データ」シートに書き込む。
  *
- * 検索戦略(SearchStrategyMode.js で切り替え。既定は type_groups):
- *   - type_groups(旧方式): 頻度別4グループ(A/B/C/D、BASE_TYPE_GROUPS)で無条件に
- *     検索する(lib/crawler/TypeGroupCellSearch.js)。
- *   - probe(新方式): まずプローブ集合(PLACE_TYPE_PROBE_SET)で1回だけ検索し、
- *     20件未満ならそのセルを確定する。20件ちょうど(飽和の疑い)のときだけ
- *     type_groups に完全フォールバックする(lib/crawler/ProbeFirstCellSearch.js)。
- *     飽和セルの挙動は type_groups と完全に同一になり、プローブ1コールが
- *     上乗せされるだけ。
+ * 検索方式: プローブ集合(PLACE_TYPE_PROBE_SET、傘型36種)で1セルにつき1回だけ
+ * 検索する(lib/crawler/ProbeFirstCellSearch.js)。`includedTypes` は `types` 配列
+ * 全体にマッチするため、166種の個別指定や頻度別グループ分けをしなくても通常は
+ * 1コールで足りる(docs/survey-findings-2026-09.md で実測済み)。
  *
- * 密集エリア対策(20件の壁への対応、いずれの戦略でも共通):
- *   1. いずれかのグループ(またはプローブ)がちょうど20件(maxResultCount)返ってきた
- *      場合、切り捨ての疑いがあるため、そのグループだけを小グループに細分化して
- *      追加検索する(タイプ分割)。密集判定の主犯はほぼ常にグループA(頻出ジャンル)。
- *   2. タイプ分割してもなお20件ちょうど返ってくる小グループがあれば、
- *      階層が MAX_TIER 未満の場合に限り、セル矩形を4象限に等分した子グリッドを
- *      生成して「グリッド一覧」に追加する(次回実行時に自動的に処理される)。
- *   3. 階層が MAX_TIER に達してもまだ20件出る場合は、これ以上の自動化は
- *      行わず「要確認(上限到達)」のステータスを付けて人間の確認に委ねる。
+ * 密集エリア対策(20件の壁への対応):
+ *   1. プローブがちょうど20件(maxResultCount)返ってきた場合、切り捨ての疑いが
+ *      あるため、階層が MAX_TIER 未満の場合に限り、セル矩形を4象限に等分した
+ *      子グリッドを生成して「グリッド一覧」に追加する(次回実行時に自動的に
+ *      処理される)。飽和マス1つあたり、この空間分割は4コール(プローブ1+
+ *      子4つ)で済み、旧来のタイプ分割(A/B/C/D+再分割で最大11コール)より安い
+ *      (docs/survey-findings-2026-09.md 2-5節)。
+ *   2. 階層が MAX_TIER に達してもまだ20件出る場合は、これ以上の自動化は
+ *      行わず「要確認(上限到達)」のステータスを付けて人間の確認に委ねる
+ *      (1棟に20店舗以上入っているケースなど、空間分割では原理的に解けない
+ *      マスが実在する。この場合はタイプ分割が必要 — 次のステップとして
+ *      docs/survey-next-actions-2026-09-20.md に記載)。
  *
  * その他の特徴:
  *   - GASの実行時間上限(6分)に対応するため、4分30秒経過時点で安全停止する。
  *     未処理のグリッドが残っていれば、再実行することで続きから再開できる
  *     (「処理状況」列が完了ステータスの行はスキップされるため)。
- *   - Place ID をキーに重複除去を行う(隣接グリッド・タイプ分割の重複ヒットに対応)。
+ *   - Place ID をキーに重複除去を行う(隣接グリッド・親子分割の重複ヒットに対応)。
  *     シートへの書き込みはグリッド単位でまとめて行う(PlaceRowWriter)。
  *   - Demoキーの1日あたりのクォータ上限(RESOURCE_EXHAUSTED/429)や、自前の月間上限
  *     (checkAndIncrementApiQuota)を検知した場合は、個別グリッドのエラーとして無視せず、
  *     ループ全体を即座に中断する。このとき「処理状況」は更新されないため、
  *     翌日・翌月以降の再実行でそのグリッドから再開される。
- *   - APIコールの内訳(どのグループで何回・何回飽和したか、階層別の消費、プローブの
- *     内訳)をログに出す。タイプカタログの見直しや格子方式の変更を判断するための計測値。
+ *   - プローブの内訳(コール数・0件セル数・確定セル数・20件飽和セル数・階層別の消費・
+ *     被覆漏れ数)をログに出す。格子方式の変更を判断するための計測値。
  *
  * @returns {void}
  */
 function crawlAllGrids() {
   const startTime = new Date().getTime();
   const MAX_RUNTIME_MS = 4.5 * 60 * 1000; // GASの実行時間上限(6分)に対する安全マージン
-
-  const strategy = getSearchStrategy();
-  Logger.log('[検索方式] ' + describeSearchStrategy(strategy));
 
   const scriptProps = PropertiesService.getScriptProperties();
   const apiKey = scriptProps.getProperty('GOOGLE_MAPS_API_KEY');
@@ -91,19 +87,12 @@ function crawlAllGrids() {
   // --- コール内訳の計測 ---
   const stats = {
     totalCalls: 0,
-    baseGroupCalls: [0, 0, 0, 0],      // グループA/B/C/D それぞれのコール数
-    baseGroupSaturated: [0, 0, 0, 0],  // うち20件に達した回数
-    typeSplitCalls: 0,                 // タイプ分割で消費したコール数
     callsByTier: {},                   // 階層別のコール数
-    emptyByGroupA: 0,                  // グループAが0件でB/C/Dを省略したセル数
-    probeCalls: 0,                     // プローブ集合でのコール数
     probeEmpty: 0,                     // プローブが0件だったセル数
     probeResolved: 0,                  // プローブ1コールで確定したセル数(0件を含む)
-    probeSaturated: 0,                 // プローブが20件で type_groups にフォールバックした回数
+    probeSaturated: 0,                 // プローブが20件で空間分割の対象になった回数
     uncoveredPlaces: 0                 // プローブ集合で被覆されなかった新規取得店舗数
   };
-
-  const GROUP_LABEL_INDEX = { A: 0, B: 1, C: 2, D: 3 };
 
   /**
    * 1セル分の callLog(実際にHTTPリクエストが飛んだ内訳)を stats に畳み込む。
@@ -119,18 +108,6 @@ function crawlAllGrids() {
       stats.callsByTier[tier] = (stats.callsByTier[tier] || 0) + 1;
       if (stats.totalCalls % 20 === 0) {
         Logger.log('進捗: 現在 ' + stats.totalCalls + ' 回コール済み');
-      }
-
-      if (entry.label === 'split') {
-        stats.typeSplitCalls++;
-      } else if (entry.label === 'probe') {
-        stats.probeCalls++;
-      } else {
-        const idx = GROUP_LABEL_INDEX[entry.label];
-        if (idx !== undefined) {
-          stats.baseGroupCalls[idx]++;
-          if (entry.placeCount >= 20) stats.baseGroupSaturated[idx]++;
-        }
       }
     });
   };
@@ -165,14 +142,11 @@ function crawlAllGrids() {
 
     const search = { apiKey: apiKey, fieldMask: PLACE_SEARCH_FIELD_MASK, writer: writer };
     const cell = { gridId: gridId, lat: lat, lng: lng, radius: radius };
-    const result = strategy === SEARCH_STRATEGY_PROBE
-      ? searchCellByProbeSet(search, cell)
-      : searchCellByTypeGroups(search, cell);
+    const result = searchCellByProbeSet(search, cell);
 
     foldCallLog(result.callLog, tier);
     newRowsCount += result.newRows;
     stats.uncoveredPlaces += result.uncoveredPlaces.length;
-    if (result.emptyByGroupA) stats.emptyByGroupA++;
     if (result.probeResolved) stats.probeResolved++;
     if (result.probeSaturated) stats.probeSaturated++;
     if (result.probeEmpty) stats.probeEmpty++;
@@ -185,7 +159,7 @@ function crawlAllGrids() {
     }
 
     if (result.fineSaturated) {
-      // --- タイプ分割してもまだ20件出るグループがある → セルの四分木分割 ---
+      // --- プローブが20件ちょうど(飽和の疑い) → セルの四分木分割 ---
       if (tier < MAX_TIER) {
         nextGridId = spawnChildGrids(gridSheet, gridId, lat, lng, cellSizeDeg, tier, nextGridId);
         gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('密集(分割済み)');
@@ -197,17 +171,8 @@ function crawlAllGrids() {
       }
     } else if (result.hadFailure) {
       gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('エラー');
-    } else if (result.emptyByGroupA) {
-      gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue(GRID_STATUS_EMPTY_BY_GROUP_A);
-      processedCount++;
-    } else if (result.probeResolved) {
-      gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('処理済み(プローブ)');
-      processedCount++;
-    } else if (result.baseSaturated) {
-      gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('密集(タイプ分割済み)');
-      processedCount++;
     } else {
-      gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('処理済み');
+      gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('処理済み(プローブ)');
       processedCount++;
     }
   }
@@ -232,17 +197,11 @@ function crawlAllGrids() {
     ' / 累計件数: ' + (finalLastRow - 1)
   );
   Logger.log(
-    '[コール内訳] グループ別(A/B/C/D): ' + stats.baseGroupCalls.join('/') +
-    ' / うち20件飽和: ' + stats.baseGroupSaturated.join('/') +
-    ' / タイプ分割: ' + stats.typeSplitCalls +
-    ' / 階層別: ' + JSON.stringify(stats.callsByTier) +
-    ' / グループA=0件で省略したセル: ' + stats.emptyByGroupA
-  );
-  Logger.log(
-    '[プローブ内訳] コール: ' + stats.probeCalls +
+    '[プローブ内訳] コール: ' + stats.totalCalls +
     ' / 0件: ' + stats.probeEmpty +
     ' / 確定: ' + stats.probeResolved +
-    ' / 20件飽和: ' + stats.probeSaturated +
+    ' / 20件飽和(要分割): ' + stats.probeSaturated +
+    ' / 階層別: ' + JSON.stringify(stats.callsByTier) +
     ' / 未被覆の店: ' + stats.uncoveredPlaces
   );
   if (quotaExceeded) {
