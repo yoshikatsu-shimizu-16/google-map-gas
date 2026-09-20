@@ -90,7 +90,11 @@ const api = new Function(source + `
     BASE_TYPE_GROUPS: BASE_TYPE_GROUPS,
     surveyAllCells: surveyAllCells,
     AREA_SURVEY_CELL_HEADERS: AREA_SURVEY_CELL_HEADERS,
-    AREA_SURVEY_PLACE_HEADERS: AREA_SURVEY_PLACE_HEADERS
+    AREA_SURVEY_PLACE_HEADERS: AREA_SURVEY_PLACE_HEADERS,
+    surveySaturatedCells: surveySaturatedCells,
+    SATURATED_CHILD_HEADERS: SATURATED_CHILD_HEADERS,
+    childCellsOf: childCellsOf,
+    CHILD_CELLS_PER_PARENT: CHILD_CELLS_PER_PARENT
   };
 `)();
 
@@ -1057,6 +1061,99 @@ check('書き出し位置をメモリで進めても行が重ならない',
 const areaCapped = runAreaSurvey(null, { SURVEY_MAX_CALLS: '1' });
 check('SURVEY_MAX_CALLS で1回の実行を刻める', areaCapped.requestCount() === 1,
   areaCapped.requestCount() + '回');
+
+// =====================================================================
+console.log('\n[13] 飽和マスの深さ調査(surveySaturatedCells)');
+// =====================================================================
+// 飽和マスを4分割した子マスにプローブを投げ、4分割で足りるかを測る。
+// 「グリッド一覧」に子グリッドを追加しない(本番の進捗を変えずに測るのが目的)。
+
+check('childCellsOf は親を4象限に割り、子の半径が概ね半分になる',
+  api.childCellsOf(35.80, 139.95, 0.01).length === 4 &&
+  Math.abs(api.childCellsOf(35.80, 139.95, 0.01)[0].radius - 359) <= 2,
+  '子半径=' + api.childCellsOf(35.80, 139.95, 0.01)[0].radius + 'm');
+
+/** 「調査(マス)」を模したシートを作る。2つ飽和、1つは疎。 */
+const buildAreaCellSheet = function() {
+  return createFakeSheet([
+    api.AREA_SURVEY_CELL_HEADERS,
+    [801, 35.80, 139.95, 717, 0, 20, '飽和(20件以上)', new Date()],
+    [802, 35.82, 139.97, 717, 0, 5, '', new Date()],
+    [803, 35.84, 139.99, 717, 0, 20, '飽和(20件以上)', new Date()]
+  ]);
+};
+
+/**
+ * surveySaturatedCells を1回実行する。
+ * @param {Object} sheets
+ * @param {Object} props
+ * @param {function} respond
+ */
+const runSaturatedSurvey = function(sheets, props, respond) {
+  const s = installGasGlobals({ respondToSearch: respond || function() {
+    return { places: [{ id: 'c1', types: ['restaurant'] }] }; // 子は1件 = 解決
+  }});
+  s.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+  s.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+  s.sheets['調査(マス)'] = (sheets && sheets['調査(マス)']) || buildAreaCellSheet();
+  if (sheets && sheets['調査(子マス)']) s.sheets['調査(子マス)'] = sheets['調査(子マス)'];
+  Object.keys(props || {}).forEach(function(k) { s.properties[k] = props[k]; });
+  api.surveySaturatedCells();
+  return s;
+};
+
+const satDry = runSaturatedSurvey(null, { SURVEY_MAX_CALLS: '0' }, null);
+check('試算モードではGoogleへのリクエストが発生しない', satDry.requestCount() === 0,
+  satDry.requestCount() + '回');
+check('試算モードは必要なコール数(親2×子4=8)を報告する',
+  satDry.logs.some(function(l) { return l.indexOf('実行すれば 8 コール消費します') !== -1; }),
+  satDry.logs.filter(function(l) { return l.indexOf('未調査:') === 0; })[0] || '(報告なし)');
+
+const sat = runSaturatedSurvey(null, null, null);
+check('飽和マスだけを対象にする(疎なマスは調べない)', sat.requestCount() === 8,
+  sat.requestCount() + '回 / 飽和2マス × 子4');
+check('Pro枠だけを消費する',
+  parseInt(sat.properties[proQuota.countProp] || '0', 10) === 8 &&
+  parseInt(sat.properties[entQuota.countProp] || '0', 10) === 0,
+  'Pro=' + sat.properties[proQuota.countProp] + ' / Enterprise=' + (sat.properties[entQuota.countProp] || 0));
+check('「グリッド一覧」に子グリッドを追加しない(本番の進捗を変えない)',
+  !sat.sheets['グリッド一覧']);
+check('「全飲食店データ」に書き込まない', !sat.sheets['全飲食店データ']);
+
+const childRows = sat.sheets['調査(子マス)'].rows();
+check('親1つにつき子4行を記録する', childRows.length - 1 === 8, (childRows.length - 1) + '行');
+check('象限のラベルが4種そろう',
+  new Set(childRows.slice(1).map(function(r) { return r[1]; })).size === 4,
+  Array.from(new Set(childRows.slice(1).map(function(r) { return r[1]; }))).join(','));
+check('4分割で解決した割合を報告する',
+  sat.logs.some(function(l) { return l.indexOf('4分割で解決した親マス: 2/2') !== -1; }),
+  sat.logs.filter(function(l) { return l.indexOf('4分割で解決した親マス') !== -1; })[0] || '(報告なし)');
+
+// 子もまだ飽和するケース
+const deep = runSaturatedSurvey(null, null, function() {
+  const places = [];
+  for (let i = 0; i < 20; i++) places.push({ id: 'd' + i, types: ['restaurant'] });
+  return { places: places };
+});
+check('子がまだ飽和するなら未解決として数える',
+  deep.logs.some(function(l) { return l.indexOf('4分割で解決した親マス: 0/2') !== -1; }),
+  deep.logs.filter(function(l) { return l.indexOf('4分割で解決した親マス') !== -1; })[0] || '(報告なし)');
+check('まだ飽和している子マス数を報告する',
+  deep.logs.some(function(l) { return l.indexOf('まだ飽和している子マス: 8') !== -1; }),
+  deep.logs.filter(function(l) { return l.indexOf('調査した親マス') === 0; })[0] || '(報告なし)');
+
+// 再実行で同じ親を叩き直さない
+const satSecond = runSaturatedSurvey(sat.sheets, null, null);
+check('再実行しても調査済みの親マスは叩き直さない', satSecond.requestCount() === 0,
+  satSecond.requestCount() + '回');
+
+// 上限は親単位で刻む(親4コール未満の端数では1親も処理しない)
+const satCapped = runSaturatedSurvey(null, { SURVEY_MAX_CALLS: '4' }, null);
+check('SURVEY_MAX_CALLS は親単位で刻む(4なら親1つ)', satCapped.requestCount() === 4,
+  satCapped.requestCount() + '回');
+const satTooSmall = runSaturatedSurvey(null, { SURVEY_MAX_CALLS: '3' }, null);
+check('親1つぶんに満たない上限なら何も叩かない', satTooSmall.requestCount() === 0,
+  satTooSmall.requestCount() + '回');
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);
