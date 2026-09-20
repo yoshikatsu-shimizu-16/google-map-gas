@@ -1049,6 +1049,9 @@ const placeWrites = batched.sheets['調査(店)'].writeCount();
 check('250マスでもシート書き込みは数回に収まる(1マス1回書いていない)',
   cellWrites <= 6 && placeWrites <= 6,
   '調査(マス)=' + cellWrites + '回 / 調査(店)=' + placeWrites + '回 / APIコール=' + batched.requestCount() + '回');
+check('長い実行では途中経過を出す(止まって見えないように)',
+  batched.logs.some(function(l) { return l.indexOf('進捗: 100/250マス調査済み') !== -1; }),
+  batched.logs.filter(function(l) { return l.indexOf('進捗:') === 0; }).join(' / ') || '(進捗なし)');
 check('バッチ化しても記録は欠けない',
   batched.sheets['調査(マス)'].rows().length - 1 === 250 &&
   batched.sheets['調査(店)'].rows().length - 1 === 250,
@@ -1144,6 +1147,18 @@ check('まだ飽和している子マス数を報告する',
 
 // 再実行で同じ親を叩き直さない
 const satSecond = runSaturatedSurvey(sat.sheets, null, null);
+// 親25個ごとに進捗が出ること(880コールの実行で無反応にならないように)
+const satMany = runSaturatedSurvey({
+  '調査(マス)': createFakeSheet([api.AREA_SURVEY_CELL_HEADERS].concat(
+    Array.apply(null, { length: 30 }).map(function(_, i) {
+      return [900 + i, 35.80 + i * 0.01, 139.95, 717, 0, 20, '飽和(20件以上)', new Date()];
+    })
+  ))
+}, null, null);
+check('親25個ごとに進捗を出す',
+  satMany.logs.some(function(l) { return l.indexOf('進捗: 25/30親マス (100コール済み)') !== -1; }),
+  satMany.logs.filter(function(l) { return l.indexOf('進捗:') === 0; }).join(' / ') || '(進捗なし)');
+
 check('再実行しても調査済みの親マスは叩き直さない', satSecond.requestCount() === 0,
   satSecond.requestCount() + '回');
 
