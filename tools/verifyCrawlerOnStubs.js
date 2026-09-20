@@ -68,7 +68,10 @@ const api = new Function(source + `
     PLACE_DATA_HEADERS: PLACE_DATA_HEADERS,
     PLACE_ID_COLUMN: PLACE_ID_COLUMN,
     GRID_STEP: GRID_STEP,
-    MAX_TIER: MAX_TIER
+    MAX_TIER: MAX_TIER,
+    callSearchNearby: callSearchNearby,
+    MONTHLY_API_CALL_LIMIT: MONTHLY_API_CALL_LIMIT,
+    QUOTA_PROP_COUNT: QUOTA_PROP_COUNT
   };
 `)();
 
@@ -516,6 +519,50 @@ check('シートの行数を超える書き込みでも例外にならない(行
 check('追加後の行数が必要行数以上になる', smallSheet.getMaxRows() >= 11,
   '行数=' + smallSheet.getMaxRows());
 check('書き込んだ10件が欠けない', smallSheet.rows().length === 11, smallSheet.rows().length + '行');
+
+// =====================================================================
+console.log('\n[8] クォータ拒否で自前の月間枠を減らさないこと');
+// =====================================================================
+// checkAndIncrementApiQuota は実際に叩く前に数えるため、Google 側の日次クォータで
+// 429 になった分まで自前の月間枠を消費していた。429 は課金対象外なので戻す。
+// 日次トリガーは日次クォータを使い切った翌実行で必ずこれを踏むため、放置すると
+// 毎日1件ずつ月間1,000の枠が溶ける。
+
+/** 指定した HTTP ステータスを返すスタブを立て、1回だけ callSearchNearby する。 */
+const callOnceWithResponse = function(responseCode) {
+  const s = installGasGlobals({
+    respondToSearch: function() { return { responseCode: responseCode, places: [] }; }
+  });
+  const result = api.callSearchNearby('stub-key', 'places.id', ['restaurant'], 35.8, 139.95, 700);
+  return { count: parseInt(s.properties[api.QUOTA_PROP_COUNT] || '0', 10), result: result };
+};
+
+const okCall = callOnceWithResponse(200);
+check('成功したコールは月間枠を1件消費する', okCall.count === 1, '消費=' + okCall.count);
+
+const quotaCall = callOnceWithResponse(429);
+check('429(クォータ拒否)は月間枠を消費しない', quotaCall.count === 0, '消費=' + quotaCall.count);
+check('429 は quotaExceeded として返る',
+  quotaCall.result.quotaExceeded === true && quotaCall.result.ok === false);
+check('429 でも requestSent は true(実際に叩いているのでコール数の計測には出す)',
+  quotaCall.result.requestSent === true);
+
+// クォータ以外のエラーは戻さない: 課金の有無が仕様として自明でなく、戻すと暴走時に
+// 上限が効かなくなるため。
+const badRequestCall = callOnceWithResponse(400);
+check('クォータ以外のエラー(400)は月間枠を消費したままにする', badRequestCall.count === 1,
+  '消費=' + badRequestCall.count);
+check('400 は quotaExceeded にならない', badRequestCall.result.quotaExceeded === false);
+
+// 自前の上限に達していれば、そもそも叩かない(既存の挙動が壊れていないこと)
+const atLimit = installGasGlobals({ respondToSearch: function() { return { places: [] }; } });
+atLimit.properties[api.QUOTA_PROP_COUNT] = String(api.MONTHLY_API_CALL_LIMIT);
+atLimit.properties['MONTHLY_API_CALL_MONTH'] = '2026-09'; // スタブの formatDate と同じ値
+const blocked = api.callSearchNearby('stub-key', 'places.id', ['restaurant'], 35.8, 139.95, 700);
+check('自前の月間上限に達していたらHTTPリクエストを送らない',
+  blocked.requestSent === false && blocked.quotaExceeded === true &&
+  atLimit.requestCount() === 0,
+  'requestSent=' + blocked.requestSent + ' / 実リクエスト=' + atLimit.requestCount());
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);
