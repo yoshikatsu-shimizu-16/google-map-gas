@@ -30,7 +30,11 @@
 function surveyAllCells() {
   const startTime = new Date().getTime();
   const MAX_RUNTIME_MS = 4.5 * 60 * 1000; // GASの実行時間上限(6分)に対する安全マージン
-  const FLUSH_EVERY = 25;                 // 途中で強制終了されても成果を失わない間隔
+  // シートへの書き出し間隔。1マスごとに書くとラウンドトリップが実行時間を食い、
+  // 6分の制限内に回せるAPIコール数が減る。逆に大きくしすぎると、想定外の例外で
+  // 落ちたときに失う成果が増える。100マスなら書き出しは実行あたり数回で済み、
+  // 失っても再実行で取り直せる範囲に収まる。
+  const FLUSH_EVERY = 100;
 
   const scriptProps = PropertiesService.getScriptProperties();
   const maxCalls = readSurveyMaxCalls(scriptProps);
@@ -87,16 +91,24 @@ function surveyAllCells() {
   let surveyed = 0, empty = 0, saturatedCells = 0, failed = 0, placesFound = 0;
   let stoppedReason = '';
 
+  // 書き出し位置はメモリ上で進める。flush のたびに getLastRow() を呼ぶと、
+  // 書き込みとは別にラウンドトリップが1往復増える(このスクリプト以外がシートに
+  // 追記することはないので、位置は自分で数えていれば足りる)。
+  let nextCellRow = sheets.cells.getLastRow() + 1;
+  let nextPlaceRow = sheets.places.getLastRow() + 1;
+
   /** 溜まった行をシートへ書き出す。中断されても成果を残すため途中でも呼ぶ。 */
   const flush = function() {
     if (cellRows.length > 0) {
-      sheets.cells.getRange(sheets.cells.getLastRow() + 1, 1, cellRows.length, AREA_SURVEY_CELL_HEADERS.length)
+      sheets.cells.getRange(nextCellRow, 1, cellRows.length, AREA_SURVEY_CELL_HEADERS.length)
         .setValues(cellRows);
+      nextCellRow += cellRows.length;
       cellRows.length = 0;
     }
     if (placeRows.length > 0) {
-      sheets.places.getRange(sheets.places.getLastRow() + 1, 1, placeRows.length, AREA_SURVEY_PLACE_HEADERS.length)
+      sheets.places.getRange(nextPlaceRow, 1, placeRows.length, AREA_SURVEY_PLACE_HEADERS.length)
         .setValues(placeRows);
+      nextPlaceRow += placeRows.length;
       placeRows.length = 0;
     }
   };

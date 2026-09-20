@@ -1023,6 +1023,36 @@ check('全マス調査済みならその旨を報告する',
 check('再実行でも累計の分析は出る(途中経過を読めるように)',
   areaSecond.logs.some(function(l) { return l.indexOf('最小被覆集合') !== -1; }));
 
+// --- 書き込みがバッチ化されていること ---
+// シートへのラウンドトリップは実行時間を食い、6分の制限内に回せるAPIコール数を減らす。
+// 1マスごとに書いていないことを、書き込み回数で機械的に保証する。
+const MANY_CELLS = [];
+for (let i = 0; i < 250; i++) {
+  MANY_CELLS.push([700 + i, 35.80, 139.95, 717, '未処理', 0, '', 0.01]);
+}
+const batched = installGasGlobals({
+  respondToSearch: function() {
+    return { places: [{ id: 'b', displayName: { text: '店' }, primaryType: 'x', types: ['restaurant'] }] };
+  }
+});
+batched.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+batched.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+batched.sheets['グリッド一覧'] = createFakeSheet([api.GRID_SHEET_HEADERS].concat(MANY_CELLS));
+api.surveyAllCells();
+
+const cellWrites = batched.sheets['調査(マス)'].writeCount();
+const placeWrites = batched.sheets['調査(店)'].writeCount();
+check('250マスでもシート書き込みは数回に収まる(1マス1回書いていない)',
+  cellWrites <= 6 && placeWrites <= 6,
+  '調査(マス)=' + cellWrites + '回 / 調査(店)=' + placeWrites + '回 / APIコール=' + batched.requestCount() + '回');
+check('バッチ化しても記録は欠けない',
+  batched.sheets['調査(マス)'].rows().length - 1 === 250 &&
+  batched.sheets['調査(店)'].rows().length - 1 === 250,
+  'マス=' + (batched.sheets['調査(マス)'].rows().length - 1) +
+  ' / 店=' + (batched.sheets['調査(店)'].rows().length - 1));
+check('書き出し位置をメモリで進めても行が重ならない',
+  new Set(batched.sheets['調査(マス)'].rows().slice(1).map(function(r) { return r[0]; })).size === 250);
+
 // --- 上限で刻めること ---
 const areaCapped = runAreaSurvey(null, { SURVEY_MAX_CALLS: '1' });
 check('SURVEY_MAX_CALLS で1回の実行を刻める', areaCapped.requestCount() === 1,
