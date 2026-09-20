@@ -10,6 +10,7 @@
 !lib/grid/GridGeometry.js
 !lib/grid/GridSubdivision.js
 !lib/grid/GridSchemaMigration.js
+!lib/grid/GridOverlapAnalysis.js
 !lib/api/PlacesApiClient.js
 !lib/api/PlaceSearchFieldMask.js
 !lib/crawler/WebsiteCategory.js
@@ -27,4 +28,5 @@
 !entrypoints/surveyEmptyCells.js
 !entrypoints/surveyAllCells.js
 !entrypoints/surveySaturatedCells.js
+!entrypoints/auditGridOverlap.js
 !appsscript.json
