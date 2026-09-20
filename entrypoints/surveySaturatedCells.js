@@ -121,7 +121,13 @@ function surveySaturatedCells() {
     stillSaturatedChildren += saturatedChildren;
     if (saturatedChildren === 0) resolvedParents++;
 
-    if (surveyedParents % FLUSH_EVERY_PARENTS === 0) flush();
+    if (surveyedParents % FLUSH_EVERY_PARENTS === 0) {
+      flush();
+      // 数分かかるので途中経過を出す。出さないと「止まっているのか動いているのか」が
+      // 実行ログから分からない。
+      Logger.log('進捗: ' + surveyedParents + '/' + plannedParents + '親マス (' +
+        (surveyedParents * CHILD_CELLS_PER_PARENT) + 'コール済み)');
+    }
   }
   flush();
 

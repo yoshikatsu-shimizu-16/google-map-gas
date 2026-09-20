@@ -150,7 +150,12 @@ function surveyAllCells() {
       ]);
     });
 
-    if ((i + 1) % FLUSH_EVERY === 0) flush();
+    if ((i + 1) % FLUSH_EVERY === 0) {
+      flush();
+      // 数分かかるので途中経過を出す。出さないと「止まっているのか動いているのか」が
+      // 実行ログから分からない。
+      Logger.log('進捗: ' + (i + 1) + '/' + plannedCalls + 'マス調査済み');
+    }
   }
   flush();
 
