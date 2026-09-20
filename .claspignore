@@ -27,4 +27,5 @@
 !lib/survey/SurveyCallBudget.js
 !entrypoints/surveyEmptyCells.js
 !entrypoints/surveyAllCells.js
+!entrypoints/surveySaturatedCells.js
 !appsscript.json
