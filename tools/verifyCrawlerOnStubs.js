@@ -71,7 +71,16 @@ const api = new Function(source + `
     MAX_TIER: MAX_TIER,
     callSearchNearby: callSearchNearby,
     MONTHLY_API_CALL_LIMIT: MONTHLY_API_CALL_LIMIT,
-    QUOTA_PROP_COUNT: QUOTA_PROP_COUNT
+    QUOTA_PROP_COUNT: QUOTA_PROP_COUNT,
+    MONTHLY_QUOTA_BY_SKU: MONTHLY_QUOTA_BY_SKU,
+    API_SKU_PRO: API_SKU_PRO,
+    API_SKU_ENTERPRISE: API_SKU_ENTERPRISE,
+    PLACE_SEARCH_FIELD_MASK: PLACE_SEARCH_FIELD_MASK,
+    PLACE_SURVEY_FIELD_MASK: PLACE_SURVEY_FIELD_MASK,
+    apiSkuOfFieldMask: apiSkuOfFieldMask,
+    surveyEmptyCells: surveyEmptyCells,
+    SURVEY_LOG_HEADERS: SURVEY_LOG_HEADERS,
+    PLACE_TYPE_PROBE_SET: PLACE_TYPE_PROBE_SET
   };
 `)();
 
@@ -563,6 +572,149 @@ check('自前の月間上限に達していたらHTTPリクエストを送らな
   blocked.requestSent === false && blocked.quotaExceeded === true &&
   atLimit.requestCount() === 0,
   'requestSent=' + blocked.requestSent + ' / 実リクエスト=' + atLimit.requestCount());
+
+// =====================================================================
+console.log('\n[9] 調査用(Pro段)と営業用(Enterprise段)で枠を食い合わないこと');
+// =====================================================================
+// 無料枠は段ごとに別勘定(Pro 5,000/月、Enterprise 1,000/月)。カウンタを分けないと
+// 調査のコールが営業用の枠を食い潰し、分離した意味がなくなる。
+
+const proQuota = api.MONTHLY_QUOTA_BY_SKU[api.API_SKU_PRO];
+const entQuota = api.MONTHLY_QUOTA_BY_SKU[api.API_SKU_ENTERPRISE];
+
+check('SKUの判定が fieldMask から導出される',
+  api.apiSkuOfFieldMask(api.PLACE_SURVEY_FIELD_MASK) === api.API_SKU_PRO &&
+  api.apiSkuOfFieldMask(api.PLACE_SEARCH_FIELD_MASK) === api.API_SKU_ENTERPRISE);
+check('未知の fieldMask は安全側(Enterprise)に倒れる',
+  api.apiSkuOfFieldMask('places.id') === api.API_SKU_ENTERPRISE);
+check('Pro枠は Enterprise枠より大きい',
+  proQuota.limit === 5000 && entQuota.limit === 1000,
+  'Pro=' + proQuota.limit + ' / Enterprise=' + entQuota.limit);
+check('Enterprise のプロパティ名が変わっていない(運用中のカウントを引き継ぐため)',
+  entQuota.countProp === 'MONTHLY_API_CALL_COUNT' && entQuota.monthProp === 'MONTHLY_API_CALL_MONTH',
+  entQuota.countProp);
+check('Pro と Enterprise で別のプロパティを使う',
+  proQuota.countProp !== entQuota.countProp, proQuota.countProp);
+
+/** 指定した fieldMask で1回だけ callSearchNearby し、両SKUのカウンタを返す。 */
+const callWithMask = function(fieldMask) {
+  const s = installGasGlobals({ respondToSearch: function() { return { places: [] }; } });
+  api.callSearchNearby('stub-key', fieldMask, ['restaurant'], 35.8, 139.95, 700);
+  return {
+    pro: parseInt(s.properties[proQuota.countProp] || '0', 10),
+    enterprise: parseInt(s.properties[entQuota.countProp] || '0', 10)
+  };
+};
+
+const surveyCall = callWithMask(api.PLACE_SURVEY_FIELD_MASK);
+check('調査用コールは Pro枠だけを消費する',
+  surveyCall.pro === 1 && surveyCall.enterprise === 0,
+  'Pro=' + surveyCall.pro + ' / Enterprise=' + surveyCall.enterprise);
+
+const harvestCall = callWithMask(api.PLACE_SEARCH_FIELD_MASK);
+check('営業用コールは Enterprise枠だけを消費する',
+  harvestCall.enterprise === 1 && harvestCall.pro === 0,
+  'Pro=' + harvestCall.pro + ' / Enterprise=' + harvestCall.enterprise);
+
+// Enterprise枠を使い切っていても、調査は Pro枠で続けられること
+const entExhausted = installGasGlobals({ respondToSearch: function() { return { places: [] }; } });
+entExhausted.properties[entQuota.countProp] = String(entQuota.limit);
+entExhausted.properties[entQuota.monthProp] = '2026-09'; // スタブの formatDate と同じ値
+const surveyWhileExhausted = api.callSearchNearby(
+  'stub-key', api.PLACE_SURVEY_FIELD_MASK, ['restaurant'], 35.8, 139.95, 700);
+check('Enterprise枠が尽きていても調査コールは通る',
+  surveyWhileExhausted.requestSent === true && surveyWhileExhausted.quotaExceeded === false,
+  'requestSent=' + surveyWhileExhausted.requestSent);
+check('調査用の fieldMask では PLACE_SURVEY_FIELD_MASK が実際に送られる',
+  api.PLACE_SURVEY_FIELD_MASK.indexOf('places.types') !== -1 &&
+  api.PLACE_SURVEY_FIELD_MASK.indexOf('places.rating') === -1 &&
+  api.PLACE_SURVEY_FIELD_MASK.indexOf('places.websiteUri') === -1,
+  'Enterprise段の項目が混ざっていない');
+
+// =====================================================================
+console.log('\n[10] 0件予測セルの実地確認(surveyEmptyCells)');
+// =====================================================================
+// OSM が0件と見ているセルだけを Pro枠1コールずつで確認する。OSM の網羅性は
+// Google に劣るので、0件のセルを捨てる前にここで裏を取る。
+
+// セル3つ。OSM の店(35.800,139.950)は1つ目の円の中にあり、残り2つからは遠い。
+const SURVEY_CELLS = [
+  [301, 35.800, 139.950, 717, '未処理', 0, '', 0.01],
+  [302, 35.900, 140.100, 717, '未処理', 0, '', 0.01],
+  [303, 35.910, 140.110, 717, '未処理', 0, '', 0.01]
+];
+
+/**
+ * surveyEmptyCells を1回実行する。
+ * @param {Object} sheets - 引き継ぎたいシート(2回目の実行で調査ログを引き継ぐ)
+ */
+const runSurvey = function(sheets) {
+  const s = installGasGlobals({
+    respondToOverpass: function() {
+      return { elements: [{ type: 'node', lat: 35.800, lon: 139.950, tags: { amenity: 'restaurant', name: 'OSMが知っている店' } }] };
+    },
+    // グリッド302は本当に空、303は OSM が知らなかった店がある
+    respondToSearch: function(body) {
+      const lat = body.locationRestriction.circle.center.latitude;
+      if (lat === 35.910) {
+        return { places: [{ id: 'hidden_1', displayName: { text: '隠れた店' }, primaryType: 'ramen_restaurant', types: ['ramen_restaurant', 'restaurant'] }] };
+      }
+      return { places: [] };
+    }
+  });
+  s.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+  s.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+  s.sheets['グリッド一覧'] = (sheets && sheets['グリッド一覧']) ||
+    createFakeSheet([api.GRID_SHEET_HEADERS].concat(SURVEY_CELLS.map(function(r) { return r.slice(); })));
+  if (sheets && sheets['調査ログ']) s.sheets['調査ログ'] = sheets['調査ログ'];
+  api.surveyEmptyCells();
+  return s;
+};
+
+const survey = runSurvey(null);
+const surveyLog = survey.sheets['調査ログ'];
+check('調査ログシートが作られる', !!surveyLog);
+
+const logRows = surveyLog ? surveyLog.rows() : [];
+check('ヘッダーが調査ログの定義どおり',
+  logRows.length > 0 && logRows[0].join('|') === api.SURVEY_LOG_HEADERS.join('|'), logRows[0] && logRows[0].join('|'));
+check('OSMが店を知っているセル(301)は確認対象にならない',
+  logRows.slice(1).every(function(r) { return r[0] !== 301; }),
+  '記録されたグリッドID: ' + logRows.slice(1).map(function(r) { return r[0]; }).join(','));
+check('OSMが0件と見た2セルだけが確認される', logRows.length - 1 === 2, (logRows.length - 1) + '件');
+
+const judgementOf = function(gridId) {
+  const row = logRows.slice(1).filter(function(r) { return r[0] === gridId; })[0];
+  return row ? row[5] : '(記録なし)';
+};
+check('本当に空だったセルは「空(確認済み)」', judgementOf(302) === '空(確認済み)', judgementOf(302));
+check('OSMが知らない店があったセルは「空でない」', judgementOf(303) === '空でない', judgementOf(303));
+
+// 枠の分離: 調査は Pro枠だけを使う
+check('調査は Pro枠だけを消費し、営業用のEnterprise枠を使わない',
+  parseInt(survey.properties[proQuota.countProp] || '0', 10) === 2 &&
+  parseInt(survey.properties[entQuota.countProp] || '0', 10) === 0,
+  'Pro=' + (survey.properties[proQuota.countProp] || 0) +
+  ' / Enterprise=' + (survey.properties[entQuota.countProp] || 0));
+check('Googleへのリクエストは確認したセル数だけ(1セル1コール)',
+  survey.googleRequestCount() === 2, survey.googleRequestCount() + '回');
+check('OSMの取得はGoogleのコールに数えない',
+  survey.requestCount() === 3 && survey.googleRequestCount() === 2,
+  '総リクエスト=' + survey.requestCount() + ' / Google=' + survey.googleRequestCount());
+
+// 本番のシートを汚さないこと
+check('「全飲食店データ」を作らない(営業用データには触らない)',
+  !survey.sheets['全飲食店データ']);
+check('「グリッド一覧」の処理状況を書き換えない',
+  survey.sheets['グリッド一覧'].rows().slice(1).every(function(r) { return r[4] === '未処理'; }),
+  survey.sheets['グリッド一覧'].rows().slice(1).map(function(r) { return r[4]; }).join(','));
+
+// 再実行しても同じセルを二度叩かない(再開可能・冪等)
+const second = runSurvey(survey.sheets);
+check('再実行しても確認済みのセルは叩き直さない', second.googleRequestCount() === 0,
+  second.googleRequestCount() + '回');
+check('再実行で調査ログが増えない', second.sheets['調査ログ'].rows().length === logRows.length,
+  second.sheets['調査ログ'].rows().length + '行');
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);

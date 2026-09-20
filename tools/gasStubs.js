@@ -109,7 +109,10 @@ function createFakeSheet(initialRows, options) {
  * @param {Object} [options]
  * @param {function(Object): {places: Object[]}} [options.respondToSearch]
  *   searchNearby のリクエストボディを受け取り、返す places を決める関数。
- * @returns {{sheets: Object, logs: string[], properties: Object, requestCount: function(): number}}
+ * @param {function(): {elements: Object[]}} [options.respondToOverpass]
+ *   Overpass への問い合わせに返す elements を決める関数。未指定なら空で返す。
+ * @returns {{sheets: Object, logs: string[], properties: Object, requestCount: function(): number,
+ *   googleRequestCount: function(): number}}
  */
 function installGasGlobals(options) {
   const opts = options || {};
@@ -117,6 +120,7 @@ function installGasGlobals(options) {
   const logs = [];
   const properties = {};
   let requestCount = 0;
+  let googleRequestCount = 0; // Overpass を除いた、Google に対するリクエスト数
 
   const spreadsheet = {
     getSheetByName: function(name) { return sheets[name] || null; },
@@ -143,6 +147,18 @@ function installGasGlobals(options) {
   global.UrlFetchApp = {
     fetch: function(url, opt) {
       requestCount++;
+
+      // Overpass(OpenStreetMap)は Google とは別サービスでクォータも無関係。
+      // ペイロードの形式も違う(フォーム形式)ため、URLで振り分ける。
+      if (String(url).indexOf('overpass') !== -1) {
+        const osm = opts.respondToOverpass ? opts.respondToOverpass() : { elements: [] };
+        return {
+          getResponseCode: function() { return osm.responseCode || 200; },
+          getContentText: function() { return JSON.stringify({ elements: osm.elements || [] }); }
+        };
+      }
+
+      googleRequestCount++;
       const body = JSON.parse(opt.payload);
       const result = opts.respondToSearch ? opts.respondToSearch(body) : { places: [] };
       return {
@@ -156,7 +172,8 @@ function installGasGlobals(options) {
     sheets: sheets,
     logs: logs,
     properties: properties,
-    requestCount: function() { return requestCount; }
+    requestCount: function() { return requestCount; },
+    googleRequestCount: function() { return googleRequestCount; }
   };
 }
 
