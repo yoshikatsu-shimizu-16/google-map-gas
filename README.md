@@ -43,6 +43,8 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `lib/crawler/ProbeFirstCellSearch.js` | 内部ヘルパー | 1セルをプローブ集合優先で探索する手順(`probe`方式の実体) |
 | `entrypoints/auditProbeSetCoverage.js` | エントリーポイント | 「全飲食店データ」の実測値からプローブ集合の被覆率を判定(APIコール0) |
 | `entrypoints/compareProbeSetWithTypeGroups.js` | エントリーポイント | 指定グリッドでプローブ集合とタイプグループの Place ID 差分を確認(5〜25コール) |
+| `tools/fetchOsmFoodPois.js` | ローカル用 | OpenStreetMap から対象エリアの飲食系POIを取得(APIキー不要・Googleのコールを使わない) |
+| `tools/buildDensityMap.js` | ローカル用 | セル別の飲食店密度を見積もり、コール数を試算(`npm run density`) |
 | `docs/Overview.js` | ドキュメント | プロジェクト全体の設計意図(ワークフロー全体像・密集エリア対策・月間APIコール上限の理由) |
 | `appsscript.json` | 設定 | GASプロジェクトのマニフェスト(タイムゾーン・実行環境など) |
 | `.clasp.json.example` | 設定 | `clasp` 用設定のひな形(実際の `.clasp.json` は各自で作成し、Gitには含めません) |
