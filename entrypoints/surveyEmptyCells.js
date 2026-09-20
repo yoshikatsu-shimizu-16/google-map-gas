@@ -16,8 +16,8 @@
  * したがって消費するコール数は「確認対象のセル数」と完全に一致する。
  *
  * 叩く前に件数を知りたい場合は、スクリプトプロパティ SURVEY_MAX_CALLS に 0 を設定して
- * 実行する。対象セル数を数えて報告するだけで、Google へのリクエストは1件も発生しない。
- * 1回の実行で使う上限を決めたい場合は、その件数を入れる(未設定なら上限なし)。
+ * 実行する(lib/survey/SurveyCallBudget.js)。対象セル数を数えて報告するだけで、
+ * Google へのリクエストは1件も発生しない。
  *
  * 安全性:
  *   - 「全飲食店データ」にも「グリッド一覧」にも書き込まない。結果は「調査ログ」シートのみ
@@ -222,27 +222,6 @@ function isEmptyCellPredictionCurrent() {
     EMPTY_CELL_PREDICTION_BOUNDS.latMax === TARGET_AREA_BOUNDS.latMax &&
     EMPTY_CELL_PREDICTION_BOUNDS.lngMin === TARGET_AREA_BOUNDS.lngMin &&
     EMPTY_CELL_PREDICTION_BOUNDS.lngMax === TARGET_AREA_BOUNDS.lngMax;
-}
-
-/**
- * 1回の実行で使ってよいコール数の上限を読む。
- * 0 を指定すると「数えるだけで叩かない」試算モードになる。未設定なら上限なし。
- *
- * 想定している使い方: 請求先を紐付けた本番キーに切り替えた直後など、
- * 消費量を確定させてから実行したいとき。
- *
- * @param {Properties} scriptProps
- * @returns {number|null} 上限。null は上限なし
- */
-function readSurveyMaxCalls(scriptProps) {
-  const raw = scriptProps.getProperty('SURVEY_MAX_CALLS');
-  if (raw === null || raw === '') return null;
-  const parsed = parseInt(raw, 10);
-  if (isNaN(parsed) || parsed < 0) {
-    Logger.log('SURVEY_MAX_CALLS の値が不正です: "' + raw + '"。上限なしとして扱います。');
-    return null;
-  }
-  return parsed;
 }
 
 /** 調査ログシートの列。判定の根拠を後から追えるよう、件数と中身の要約も残す。 */

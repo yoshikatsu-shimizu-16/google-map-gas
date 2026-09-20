@@ -87,7 +87,10 @@ const api = new Function(source + `
     GRID_STATUS_EMPTY_BY_GROUP_A: GRID_STATUS_EMPTY_BY_GROUP_A,
     compareProbeSetWithTypeGroups: compareProbeSetWithTypeGroups,
     PROBE_SURVEY_LOG_HEADERS: PROBE_SURVEY_LOG_HEADERS,
-    BASE_TYPE_GROUPS: BASE_TYPE_GROUPS
+    BASE_TYPE_GROUPS: BASE_TYPE_GROUPS,
+    surveyAllCells: surveyAllCells,
+    AREA_SURVEY_CELL_HEADERS: AREA_SURVEY_CELL_HEADERS,
+    AREA_SURVEY_PLACE_HEADERS: AREA_SURVEY_PLACE_HEADERS
   };
 `)();
 
@@ -921,6 +924,109 @@ check('検証ログのヘッダーが定義どおり',
   probeLogSheet.rows()[0].join('|'));
 check('検証したセルがログに残る(再実行で続きから進めるため)',
   probeLogSheet.rows().length - 1 === 2, (probeLogSheet.rows().length - 1) + '行');
+
+// =====================================================================
+console.log('\n[12] 全マスの密度・タイプ調査(surveyAllCells)');
+// =====================================================================
+// Pro枠で全マスに1コールずつ投げ、密度とタイプの実態を集める。
+// 本番シートには一切書かず、Enterprise枠も消費しない。
+
+const AREA_CELLS = [
+  [601, 35.80, 139.95, 717, '未処理', 0, '', 0.01],  // 3件
+  [602, 35.81, 139.96, 717, '未処理', 0, '', 0.01],  // 0件
+  [603, 35.82, 139.97, 358, '密集(分割済み)', 1, 601, 0.005] // 20件(飽和)
+];
+
+/**
+ * surveyAllCells を1回実行する。
+ * @param {Object} sheets - 引き継ぎたいシート(再実行の検証用)
+ * @param {Object} props
+ */
+const runAreaSurvey = function(sheets, props) {
+  const s = installGasGlobals({
+    respondToSearch: function(body) {
+      const lat = body.locationRestriction.circle.center.latitude;
+      if (lat === 35.81) return { places: [] };
+      const count = lat === 35.82 ? 20 : 3;
+      const places = [];
+      for (let i = 0; i < count; i++) {
+        places.push({
+          id: 'a_' + lat.toFixed(2) + '_' + i,
+          displayName: { text: '店' + i },
+          primaryType: 'ramen_restaurant',
+          types: ['ramen_restaurant', 'restaurant', 'food']
+        });
+      }
+      return { places: places };
+    }
+  });
+  s.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+  s.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+  s.sheets['グリッド一覧'] = createFakeSheet([api.GRID_SHEET_HEADERS].concat(AREA_CELLS.map(function(r) { return r.slice(); })));
+  ['調査(マス)', '調査(店)'].forEach(function(name) {
+    if (sheets && sheets[name]) s.sheets[name] = sheets[name];
+  });
+  Object.keys(props || {}).forEach(function(k) { s.properties[k] = props[k]; });
+  api.surveyAllCells();
+  return s;
+};
+
+// --- 試算モード: 叩く前に消費コール数を知る ---
+const areaDryRun = runAreaSurvey(null, { SURVEY_MAX_CALLS: '0' });
+check('試算モードではGoogleへのリクエストが発生しない', areaDryRun.requestCount() === 0,
+  areaDryRun.requestCount() + '回');
+check('試算モードは実行に必要なコール数を報告する',
+  areaDryRun.logs.some(function(l) { return l.indexOf('実行すれば 3 コール消費します') !== -1; }),
+  areaDryRun.logs.filter(function(l) { return l.indexOf('未調査:') === 0; })[0] || '(報告なし)');
+
+// --- 本実行 ---
+const area = runAreaSurvey(null, null);
+check('1マス1コール(飽和しても分割しない)', area.requestCount() === 3, area.requestCount() + '回');
+check('Pro枠だけを消費する',
+  parseInt(area.properties[proQuota.countProp] || '0', 10) === 3 &&
+  parseInt(area.properties[entQuota.countProp] || '0', 10) === 0,
+  'Pro=' + area.properties[proQuota.countProp] + ' / Enterprise=' + (area.properties[entQuota.countProp] || 0));
+check('「全飲食店データ」に書き込まない', !area.sheets['全飲食店データ']);
+check('「グリッド一覧」を書き換えない',
+  area.sheets['グリッド一覧'].rows()[1][4] === '未処理',
+  area.sheets['グリッド一覧'].rows()[1][4]);
+
+const areaCellSheet = area.sheets['調査(マス)'];
+const areaPlaceSheet = area.sheets['調査(店)'];
+check('マス単位のシートに全マスが記録される', areaCellSheet.rows().length - 1 === 3,
+  (areaCellSheet.rows().length - 1) + '行');
+check('店単位のシートに取得した店が記録される(3+0+20=23件)',
+  areaPlaceSheet.rows().length - 1 === 23, (areaPlaceSheet.rows().length - 1) + '行');
+check('階層も記録する(子マスの密度を親と区別するため)',
+  areaCellSheet.rows().slice(1).some(function(r) { return r[4] === 1; }),
+  areaCellSheet.rows().slice(1).map(function(r) { return r[4]; }).join(','));
+check('飽和したマスに印が付く',
+  areaCellSheet.rows().slice(1).filter(function(r) { return String(r[6]).indexOf('飽和') !== -1; }).length === 1,
+  areaCellSheet.rows().slice(1).map(function(r) { return r[6]; }).join('|'));
+
+check('密度の分布を報告する',
+  area.logs.some(function(l) { return l.indexOf('0件(探索不要)') !== -1; }),
+  area.logs.filter(function(l) { return l.indexOf('0件(探索不要)') !== -1; })[0] || '(報告なし)');
+check('タイプの被覆率と最小被覆集合を報告する',
+  area.logs.some(function(l) { return l.indexOf('現行プローブ集合の被覆率') !== -1; }) &&
+  area.logs.some(function(l) { return l.indexOf('最小被覆集合') !== -1; }));
+check('カタログのうち実在が確認できた種類数を報告する(刈り込みの根拠)',
+  area.logs.some(function(l) { return l.indexOf('実在が確認できたもの') !== -1; }),
+  area.logs.filter(function(l) { return l.indexOf('カタログ166種') !== -1; })[0] || '(報告なし)');
+
+// --- 再実行: 調査済みのマスは叩き直さない ---
+const areaSecond = runAreaSurvey(area.sheets, null);
+check('再実行しても調査済みのマスは叩き直さない', areaSecond.requestCount() === 0,
+  areaSecond.requestCount() + '回');
+check('全マス調査済みならその旨を報告する',
+  areaSecond.logs.some(function(l) { return l.indexOf('未調査のマスはありません') !== -1; }));
+check('再実行でも累計の分析は出る(途中経過を読めるように)',
+  areaSecond.logs.some(function(l) { return l.indexOf('最小被覆集合') !== -1; }));
+
+// --- 上限で刻めること ---
+const areaCapped = runAreaSurvey(null, { SURVEY_MAX_CALLS: '1' });
+check('SURVEY_MAX_CALLS で1回の実行を刻める', areaCapped.requestCount() === 1,
+  areaCapped.requestCount() + '回');
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);

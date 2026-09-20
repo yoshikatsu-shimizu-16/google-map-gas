@@ -43,6 +43,8 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `lib/crawler/ProbeFirstCellSearch.js` | 内部ヘルパー | 1セルをプローブ集合優先で探索する手順(`probe`方式の実体) |
 | `entrypoints/auditProbeSetCoverage.js` | エントリーポイント | 「全飲食店データ」の実測値からプローブ集合の被覆率を判定(APIコール0) |
 | `entrypoints/compareProbeSetWithTypeGroups.js` | エントリーポイント | 複数セルで傘型プローブ1コールと4グループの Place ID 差分を検証(**Pro段。営業用の枠を使わない**) |
+| `lib/survey/SurveyCallBudget.js` | 内部ヘルパー | 調査系が1回の実行で使ってよいコール数(`SURVEY_MAX_CALLS`)の読み取り |
+| `entrypoints/surveyAllCells.js` | エントリーポイント | 全マスに1コールずつ投げ、密度とタイプの実態を Pro枠で洗い出す |
 | `lib/survey/EmptyCellPrediction.js` | データ(自動生成) | OSMが飲食店0件と見たグリッドIDの一覧。`npm run predict-empty` で再生成 |
 | `lib/survey/OsmFoodPoiSource.js` | ローカル用 | Overpass のクエリ組み立てとレスポンス変換(純関数。GASへはデプロイしない) |
 | `lib/survey/CellDensityIndex.js` | ローカル用 | POIをセル矩形・検索円に対応付けて件数を引く(純関数。GASへはデプロイしない) |
@@ -53,7 +55,7 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `docs/Overview.js` | ドキュメント | プロジェクト全体の設計意図(ワークフロー全体像・密集エリア対策・月間APIコール上限の理由) |
 | `appsscript.json` | 設定 | GASプロジェクトのマニフェスト(タイムゾーン・実行環境など) |
 | `.clasp.json.example` | 設定 | `clasp` 用設定のひな形(実際の `.clasp.json` は各自で作成し、Gitには含めません) |
-| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記26個の `.js` と `appsscript.json` のみに限定する設定 |
+| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記28個の `.js` と `appsscript.json` のみに限定する設定 |
 
 ## Google Drive 上の Apps Script プロジェクトとの接続方法
 
@@ -154,7 +156,7 @@ npm run push
 消費数のスクリプトプロパティは Pro が `MONTHLY_PRO_API_CALL_COUNT`、
 Enterprise が `MONTHLY_API_CALL_COUNT`(運用中のカウントを引き継ぐため改名していません)。
 
-- `SURVEY_MAX_CALLS`(任意) — `surveyEmptyCells` が1回の実行で使ってよいコール数の上限。
+- `SURVEY_MAX_CALLS`(任意) — **調査系エントリーポイント共通**で、1回の実行で使ってよいコール数の上限。
   **`0` にすると「実行したら何コール必要か」を報告するだけで、Googleへのリクエストは
   1件も発生しません**(請求先を紐付けたキーに切り替えた直後など、消費量を確定させて
   から実行したいときに使う)。未設定なら上限なし
@@ -176,6 +178,7 @@ GASの「実行」メニューやトリガー設定画面に並ぶ関数のう�
 | `listTriggers` | `entrypoints/triggers.js` | 確認用 | 現在設定されているトリガー一覧をログ出力 | 副作用なし |
 | `checkMonthlyApiUsage` | `entrypoints/checkMonthlyApiUsage.js` | 確認用 | **SKUごとの**月間APIコール数と検索方式をログ出力 | 副作用なし。**APIコール0**。カウンタはスクリプト単位で、APIキーを別プロジェクトに替えても引き継がれる |
 | `resetRestaurantData` | `entrypoints/resetRestaurantData.js` | 手動実行(初回・データ再取得時のみ) | 「全飲食店データ」シートのデータ行を全削除 | データ消去を伴うため実行前に要確認 |
+| `surveyAllCells` | `entrypoints/surveyAllCells.js` | 調査用 | 全マスに1コールずつ投げ、密度とタイプの実態を「調査(マス)」「調査(店)」に記録 | **Pro段のため営業用の枠を消費しない**。1マス1コール固定。本番シートに書き込まない。`SURVEY_MAX_CALLS=0` で試算のみ |
 | `surveyEmptyCells` | `entrypoints/surveyEmptyCells.js` | 調査用 | OSMが0件と見た**未処理**セルを1コールずつ実地確認し「調査ログ」に記録 | **Pro段のため営業用の枠(1,000/月)を消費しない**。消費コール数=対象セル数。`SURVEY_MAX_CALLS=0` で試算のみ。本番シートに書き込まない |
 | `auditProbeSetCoverage` | `entrypoints/auditProbeSetCoverage.js` | 確認用 | 実測データからプローブ集合の被覆率・最小被覆集合をログ出力 | 副作用なし。**APIコール0**。`SEARCH_STRATEGY=probe` へ切り替える前に実行すること。**「全タイプ」列が埋まった行が必要**(下記の前提を参照) |
 | `compareProbeSetWithTypeGroups` | `entrypoints/compareProbeSetWithTypeGroups.js` | 調査用 | 複数セルで傘型プローブ1コールと4グループ(A/B/C/D)の差分を検証し「調査ログ(傘型)」に記録 | **Pro段のため営業用の枠を消費しない**。1セル5コール(飽和なら1)。**「全飲食店データ」に書き込まない**(Pro段は評価もHPも無いため) |
