@@ -56,6 +56,8 @@ const api = new Function(source + `
     crawlAllGrids: crawlAllGrids,
     ensureGridSchemaMigrated: ensureGridSchemaMigrated,
     ensurePlaceDataSchemaMigrated: ensurePlaceDataSchemaMigrated,
+    ensurePlaceDataFilter: ensurePlaceDataFilter,
+    createPlaceRowWriter: createPlaceRowWriter,
     classifyWebsite: classifyWebsite,
     cellCoverRadiusMeters: cellCoverRadiusMeters,
     GRID_SHEET_HEADERS: GRID_SHEET_HEADERS,
@@ -281,15 +283,111 @@ const filterRange = filteredSheet.filterRange();
 check('移行後もフィルタが張られたまま残る', filterRange !== null,
   filterRange === null ? 'フィルタが消えている' : 'あり');
 check('張り直したフィルタが新スキーマの17列を覆う',
-  filterRange !== null && filterRange.numCols === api.PLACE_DATA_HEADERS.length &&
-  filterRange.numRows === 2,
+  filterRange !== null && filterRange.numCols === api.PLACE_DATA_HEADERS.length,
   filterRange ? filterRange.numRows + '行 x ' + filterRange.numCols + '列' : '-');
+check('張り直したフィルタはデータ行数ではなくシート全行を覆う(以後の行追加で範囲が変わらない)',
+  filterRange !== null && filterRange.numRows === filteredSheet.getMaxRows(),
+  filterRange ? filterRange.numRows + '行 / シート全行=' + filteredSheet.getMaxRows() : '-');
 
 const emptySheet = createFakeSheet([LEGACY_PLACE_HEADERS]);
 api.ensurePlaceDataSchemaMigrated(emptySheet);
 check('データ行0件でもヘッダーだけ移行できる',
   emptySheet.rows().length === 1 &&
   emptySheet.rows()[0].join('|') === api.PLACE_DATA_HEADERS.join('|'));
+
+// =====================================================================
+console.log('\n[6] フィルタ条件の保持と行容量(Issue #5)');
+// =====================================================================
+// 旧実装は crawlAllGrids の末尾で毎回 remove() → createFilter() しており、
+// 運用者が設定した絞り込み条件(HP種別=なし / 評価>=3.8 等)が日次トリガーのたびに
+// 消えていた。ここでは「範囲が変わらない限りフィルタに触らない」ことを、
+// フィルタオブジェクトの同一性で検証する(スタブの remove() は別インスタンスを作るため、
+// 同一インスタンスが残っている = 張り直していない = 条件が生きている)。
+
+const filterSheet = createFakeSheet([api.PLACE_DATA_HEADERS]);
+const created = api.ensurePlaceDataFilter(filterSheet);
+const firstFilter = filterSheet.getFilter();
+check('フィルタが無ければ張られる', created === true && firstFilter !== null);
+check('フィルタ範囲がシート全行 × スキーマ列数になる',
+  filterSheet.filterRange().numRows === filterSheet.getMaxRows() &&
+  filterSheet.filterRange().numCols === api.PLACE_DATA_HEADERS.length,
+  filterSheet.filterRange().numRows + '行 x ' + filterSheet.filterRange().numCols + '列');
+
+// 運用者が設定した絞り込み条件の代わりに目印を付け、これが生き残るかを見る
+firstFilter.operatorCriteria = 'HP種別=なし / 評価>=3.8';
+
+// 行が増えても範囲は変わらない ＝ 張り直さない
+const writer = api.createPlaceRowWriter(filterSheet, new Set());
+for (let i = 0; i < 50; i++) {
+  writer.add({ id: 'f_' + i, displayName: { text: '店' + i }, types: ['restaurant'] });
+}
+writer.flush();
+const rebuiltAfterWrite = api.ensurePlaceDataFilter(filterSheet);
+check('行が増えてもフィルタを張り直さない', rebuiltAfterWrite === false);
+check('運用者が設定した絞り込み条件が残る',
+  filterSheet.getFilter() === firstFilter &&
+  filterSheet.getFilter().operatorCriteria === 'HP種別=なし / 評価>=3.8',
+  String(filterSheet.getFilter() && filterSheet.getFilter().operatorCriteria));
+
+// 列数が変わったとき(スキーマ移行)だけは張り直す必要がある
+const staleSheet = createFakeSheet([api.PLACE_DATA_HEADERS]);
+staleSheet.getRange(1, 1, 2, 5).createFilter(); // 旧い狭い範囲を掴んだフィルタ
+check('範囲が意図と違えば張り直す', api.ensurePlaceDataFilter(staleSheet) === true);
+
+// --- crawlAllGrids を2回通しても条件が残ること(エンドツーエンド) ---
+// どのセルでも3件だけ返す単純なフェイクで、1セルだけのグリッドを2回クロールする
+// (日次トリガーが毎朝走る状況に相当)。
+const twiceRun = installGasGlobals({
+  respondToSearch: function(body) {
+    const c = body.locationRestriction.circle.center;
+    const places = [];
+    for (let i = 0; i < 3; i++) {
+      places.push({
+        id: 'e2e_' + body.includedTypes[0] + '_' + i,
+        displayName: { text: '店舗' + i },
+        location: { latitude: c.latitude, longitude: c.longitude },
+        types: ['restaurant', 'food'],
+        websiteUri: '',
+        rating: 4.0,
+        userRatingCount: 10
+      });
+    }
+    return { places: places };
+  }
+});
+twiceRun.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+twiceRun.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+twiceRun.sheets['グリッド一覧'] = createFakeSheet([
+  api.GRID_SHEET_HEADERS,
+  [901, 35.80, 139.95, 717, '未処理', 0, '', api.GRID_STEP]
+]);
+api.crawlAllGrids();
+const dataSheetTwice = twiceRun.sheets['全飲食店データ'];
+const filterAfterFirstRun = dataSheetTwice.getFilter();
+filterAfterFirstRun.operatorCriteria = 'HP種別=なし';
+// 2回目は同じセルを未処理に戻して再クロールする(日次トリガーの再実行に相当)
+twiceRun.sheets['グリッド一覧'].getRange(2, 5).setValue('未処理');
+api.crawlAllGrids();
+check('crawlAllGrids を2回実行してもフィルタ条件が消えない',
+  dataSheetTwice.getFilter() === filterAfterFirstRun &&
+  dataSheetTwice.getFilter().operatorCriteria === 'HP種別=なし',
+  String(dataSheetTwice.getFilter() && dataSheetTwice.getFilter().operatorCriteria));
+
+// --- 行容量: シートの既定行数(1000行)を超えても落ちないこと ---
+// 旧実装は getMaxRows を見ておらず、実機では「範囲が不正」でクロールごと落ちる。
+// スタブも同じ条件で例外を投げるようにしてある(tools/gasStubs.js)。
+const smallSheet = createFakeSheet([api.PLACE_DATA_HEADERS], { maxRows: 5 });
+const smallWriter = api.createPlaceRowWriter(smallSheet, new Set());
+for (let i = 0; i < 10; i++) {
+  smallWriter.add({ id: 'cap_' + i, displayName: { text: '店' + i }, types: ['restaurant'] });
+}
+let capacityError = null;
+try { smallWriter.flush(); } catch (e) { capacityError = e; }
+check('シートの行数を超える書き込みでも例外にならない(行を自動追加する)',
+  capacityError === null, capacityError ? String(capacityError.message) : '11行まで書き込み成功');
+check('追加後の行数が必要行数以上になる', smallSheet.getMaxRows() >= 11,
+  '行数=' + smallSheet.getMaxRows());
+check('書き込んだ10件が欠けない', smallSheet.rows().length === 11, smallSheet.rows().length + '行');
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);

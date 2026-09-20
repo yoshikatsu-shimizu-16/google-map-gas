@@ -234,14 +234,13 @@ function crawlAllGrids() {
 
   writer.flush();
 
-  // 出力シートにヘッダー固定・フィルタを再設定(既存フィルタは一度削除してから再作成)
+  // 出力シートのヘッダー固定とフィルタを整える。フィルタは範囲がずれたときだけ
+  // 張り直すため、運用者が設定したフィルタ条件は通常の実行では消えない
+  // (lib/crawler/PlaceDataSheetFilter.js を参照)。
   const finalLastRow = dataSheet.getLastRow();
-  const finalLastCol = dataSheet.getLastColumn();
   dataSheet.setFrozenRows(1);
-  const existingFilter = dataSheet.getFilter();
-  if (existingFilter) existingFilter.remove();
-  if (finalLastRow > 1) {
-    dataSheet.getRange(1, 1, finalLastRow, finalLastCol).createFilter();
+  if (ensurePlaceDataFilter(dataSheet)) {
+    Logger.log('フィルタ範囲が変わったため張り直しました。絞り込み条件の再設定が必要です。');
   }
 
   Logger.log(

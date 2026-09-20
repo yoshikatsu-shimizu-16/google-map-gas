@@ -30,9 +30,13 @@ function loadDeployedSource() {
 /**
  * メモリ上の2次元配列で動く Sheet のスタブ。
  * @param {Array[]} [initialRows] - 初期の行(ヘッダーを含む)
+ * @param {{maxRows: number}} [options] - 行容量。既定は実物のシートと同じ1000行。
+ *   容量を超える範囲への書き込みは実物と同様に例外にする(PlaceRowWriter の
+ *   行容量確保が効いているかを検証するため)。
  */
-function createFakeSheet(initialRows) {
+function createFakeSheet(initialRows, options) {
   const cells = (initialRows || []).map(function(r) { return r.slice(); });
+  let maxRows = (options && options.maxRows) || 1000;
   const ensure = function(row, col) {
     while (cells.length < row) cells.push([]);
     const target = cells[row - 1];
@@ -53,9 +57,14 @@ function createFakeSheet(initialRows) {
     },
     setFrozenRows: function() { return sheet; },
     getFilter: function() { return filter; },
+    getMaxRows: function() { return maxRows; },
+    insertRowsAfter: function(afterPosition, howMany) { maxRows += howMany; return sheet; },
     getRange: function(row, col, numRows, numCols) {
       const nr = numRows || 1;
       const nc = numCols || 1;
+      if (row + nr - 1 > maxRows) {
+        throw new Error('範囲がシートの行数(' + maxRows + ')を超えています: ' + (row + nr - 1) + '行目');
+      }
       return {
         setValue: function(v) { ensure(row, col); cells[row - 1][col - 1] = v; },
         setValues: function(values) {
@@ -73,8 +82,15 @@ function createFakeSheet(initialRows) {
           return out;
         },
         createFilter: function() {
+          const range = {
+            getRow: function() { return row; },
+            getColumn: function() { return col; },
+            getNumRows: function() { return nr; },
+            getNumColumns: function() { return nc; }
+          };
           filter = {
             range: { row: row, col: col, numRows: nr, numCols: nc },
+            getRange: function() { return range; },
             remove: function() { filter = null; }
           };
           return filter;

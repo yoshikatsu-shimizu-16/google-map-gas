@@ -33,12 +33,13 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `lib/api/PlaceSearchFieldMask.js` | 内部ヘルパー | searchNearby で取得するフィールドの指定(課金SKUの段を左右する) |
 | `lib/crawler/WebsiteCategory.js` | 内部ヘルパー | websiteUri を HP種別(なし/SNSのみ/グルメポータル/簡易ページ/自社HP)とドメインに分類 |
 | `lib/crawler/PlaceRowWriter.js` | 内部ヘルパー | 「全飲食店データ」への一括書き込みと Place ID による重複除去 |
+| `lib/crawler/PlaceDataSheetFilter.js` | 内部ヘルパー | 「全飲食店データ」シートのフィルタ範囲の方針(運用者の絞り込み条件を消さない張り方) |
 | `lib/crawler/PlaceDataSchemaMigration.js` | 内部ヘルパー | 「全飲食店データ」シートの列構成を保持したまま最新スキーマへ移行 |
 | `lib/catalog/PlaceTypeCatalog.js` | データ | 検索対象 Place Type のカタログ定義(頻度別4グループ)と密集時のタイプ分割 |
 | `docs/Overview.js` | ドキュメント | プロジェクト全体の設計意図(ワークフロー全体像・密集エリア対策・月間APIコール上限の理由) |
 | `appsscript.json` | 設定 | GASプロジェクトのマニフェスト(タイムゾーン・実行環境など) |
 | `.clasp.json.example` | 設定 | `clasp` 用設定のひな形(実際の `.clasp.json` は各自で作成し、Gitには含めません) |
-| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記15個の `.js` と `appsscript.json` のみに限定する設定 |
+| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記17個の `.js` と `appsscript.json` のみに限定する設定 |
 
 ## Google Drive 上の Apps Script プロジェクトとの接続方法
 
@@ -211,6 +212,21 @@ H列を削除し、`処理済み(A=0のため省略)` を `未処理` に一括�
 | N | 営業状況 | Pro |
 | O〜P | 通常営業時間 / 価格帯 | Enterprise |
 | Q | Place ID | Pro |
+
+#### フィルタ(絞り込み条件)の扱い
+
+シート1行目のフィルタは、**範囲がずれたときだけ**張り直します(`ensurePlaceDataFilter`)。
+範囲は「データ行数」ではなく**シートの全行数 × スキーマの列数**で張るため、クロールで
+行が増えても範囲は変わらず、運用者が設定した絞り込み条件
+(`HP種別`=なし / `評価`>=3.8 など)はそのまま残ります。
+
+以前は実行のたびに削除・再作成していたため、日次トリガーが走るたびに条件が消えていました。
+張り直しが起きるのは次の場合だけです。張り直したときはログに
+「フィルタ範囲が変わったため張り直しました」と出ます。
+
+- フィルタが存在しない(初回、または手動で外した)
+- スキーマ移行で列数が変わった(旧列の条件は原理的に移せないため復元しません)
+- 行容量を使い切って行を追加した(1,000行ごと。`PLACE_DATA_ROW_CAPACITY_CHUNK`)
 
 旧スキーマ(20列)からの移行では:
 
