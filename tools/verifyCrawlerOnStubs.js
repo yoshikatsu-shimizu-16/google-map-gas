@@ -49,10 +49,8 @@ const stub = installGasGlobals({
 });
 stub.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
 stub.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
-// この[1]は「旧方式(type_groups)が無改変であること」の回帰テストと位置づける。
-// crawlAllGrids.js:145-204 を TypeGroupCellSearch.js へ移設した際のデグレ検知になるため、
-// 既定値に頼らず明示的に固定し、以下のアサート内容は一切変えない。
-stub.properties['SEARCH_STRATEGY'] = 'type_groups';
+// この[1]は crawlAllGrids の通常経路(プローブ集合1コール→飽和したら4分割)の
+// 主要な回帰テストと位置づける。
 
 const api = new Function(source + `
   return {
@@ -110,9 +108,9 @@ const statusCounts = {};
 grid.slice(1).forEach(function(r) { statusCounts[r[4]] = (statusCounts[r[4]] || 0) + 1; });
 console.log('       処理状況: ' + JSON.stringify(statusCounts));
 
-check('「処理済み」が付く', (statusCounts['処理済み'] || 0) > 0);
-check('飲食店ゼロのセルに「処理済み(A=0のため省略)」が付く',
-  (statusCounts['処理済み(A=0のため省略)'] || 0) > 0, (statusCounts['処理済み(A=0のため省略)'] || 0) + '件');
+check('疎セルに「処理済み(プローブ)」が付く', (statusCounts['処理済み(プローブ)'] || 0) > 0);
+check('飲食店ゼロのセルも「処理済み(プローブ)」に含まれる(グループ省略の概念が無いため0件を区別しない)',
+  (statusCounts['処理済み(A=0のため省略)'] || 0) === 0, (statusCounts['処理済み(A=0のため省略)'] || 0) + '件');
 check('密集セルに「密集(分割済み)」が付く', (statusCounts['密集(分割済み)'] || 0) > 0);
 
 const splitCount = statusCounts['密集(分割済み)'] || 0;
@@ -140,8 +138,8 @@ const ids = data.slice(1).map(function(r) { return r[api.PLACE_ID_COLUMN - 1]; }
 check('Place ID が重複しない', ids.length === new Set(ids).size,
   (ids.length - new Set(ids).size) + '件の重複 / 総数' + ids.length);
 
-const breakdown = stub.logs.filter(function(l) { return l.indexOf('[コール内訳]') === 0; }).pop();
-check('コール内訳のログが出力される', !!breakdown);
+const breakdown = stub.logs.filter(function(l) { return l.indexOf('[プローブ内訳]') === 0; }).pop();
+check('プローブ内訳のログが出力される', !!breakdown);
 if (breakdown) console.log('       ' + breakdown);
 
 const summary = stub.logs.filter(function(l) { return l.indexOf('APIコール回数:') !== -1; }).pop();
@@ -149,12 +147,10 @@ const reported = summary && Number(summary.match(/APIコール回数: (\d+)/)[1]
 check('計測したコール数が実際のHTTPリクエスト数と一致する',
   reported === stub.requestCount(), '計測=' + reported + ' / 実リクエスト=' + stub.requestCount());
 
-// グループA=0件のセルでは残り3グループを省略している(A のコール数だけ多くなる)
-const groupCalls = breakdown && breakdown.match(/グループ別\(A\/B\/C\/D\): (\d+)\/(\d+)\/(\d+)\/(\d+)/);
-if (groupCalls) {
-  const a = Number(groupCalls[1]), b = Number(groupCalls[2]);
-  check('グループAが0件のセルでB/C/Dが省略されている', a > b, 'A=' + a + ' > B=' + b);
-}
+// 密集セルもプローブ1コールで飽和判定でき、A/B/C/Dへのフォールバックをしないため、
+// 今回処理した374マスに対してコール数もちょうど374回になる(子グリッドは次回実行分)。
+check('密集セルもプローブ1コールだけで飽和判定できる(A/B/C/Dを叩かない)',
+  reported === gridAfterGenerate, '計測=' + reported + ' / 対象マス=' + gridAfterGenerate);
 
 // =====================================================================
 console.log('\n[2] 旧5列スキーマからの移行(進捗を保持すること)');
@@ -327,14 +323,12 @@ check('データ行0件でもヘッダーだけ移行できる',
   emptySheet.rows()[0].join('|') === api.PLACE_DATA_HEADERS.join('|'));
 
 // =====================================================================
-console.log('\n[6] プローブ優先モード(SEARCH_STRATEGY=probe)');
+console.log('\n[6] プローブ集合による探索(20件飽和セルの空間分割)');
 // =====================================================================
 // このセクション専用のフェイク: id を「中心座標とインデックス」だけから作る
-// (includedTypes には依存しない)。[1]のフェイクは id に includedTypes[0] を
-// 使っているため type_groups と probe とでモード間の id が変わってしまい、
-// 「同じセルなら同じ店が返る」ことの検証に使えない。ここでは同一セルに対して
-// type_groups / probe のどちらで検索しても物理的に同じ店が返る、という
-// 「プローブ1コールで取りこぼさない」ことのローカル側の主張を検証する。
+// (includedTypes には依存しない)。座標だけで密集/空/疎を判定できるようにし、
+// 「疎・空セルは1コールで確定する」「密集セルはA/B/C/Dへフォールバックせず
+// 1コールで飽和判定し空間分割に回す」ことを検証する。
 const SPARSE_CELL = { gridId: 101, lat: 35.80, lng: 139.95 };
 const EMPTY_CELL = { gridId: 102, lat: 35.79, lng: 139.94 };
 const DENSE_CELL = { gridId: 103, lat: 35.86, lng: 139.97 };
@@ -379,18 +373,16 @@ const buildGridSheet = function(cells) {
 };
 
 /**
- * SEARCH_STRATEGY を指定して crawlAllGrids を1回実行する。
+ * crawlAllGrids を1回実行する。
  * installGasGlobals は呼ぶたびに global.Logger 等を差し替えるため、この関数の
  * 呼び出しごとに独立したシート・ログ・コール数で計測できる。
- * @param {string} strategy - 'type_groups' | 'probe'
  * @param {Array<{gridId:number, lat:number, lng:number}>} cells
  * @returns {{stub: Object, gridRows: Array[], dataRows: Array[]}}
  */
-const runCrawlWithStrategy = function(strategy, cells) {
+const runCrawl = function(cells) {
   const s = installGasGlobals({ respondToSearch: respondByCellOnly });
   s.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
   s.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
-  s.properties['SEARCH_STRATEGY'] = strategy;
   s.sheets['グリッド一覧'] = buildGridSheet(cells);
   api.crawlAllGrids();
   return {
@@ -401,7 +393,7 @@ const runCrawlWithStrategy = function(strategy, cells) {
 };
 
 // --- 疎セル・空セルだけのグリッドで、処理状況とコール数を確認する ---
-const sparseRun = runCrawlWithStrategy('probe', [SPARSE_CELL, EMPTY_CELL]);
+const sparseRun = runCrawl([SPARSE_CELL, EMPTY_CELL]);
 const sparseStatuses = sparseRun.gridRows.slice(1).map(function(r) { return r[4]; });
 check('疎セルに「処理済み(プローブ)」が付く', sparseStatuses[0] === '処理済み(プローブ)', sparseStatuses[0]);
 check('空セルにも「処理済み(プローブ)」が付く(プローブは何も省略していないため0件と区別しない)',
@@ -412,38 +404,26 @@ check('疎セル・空セルとも1回のコールで確定する(2セルでコ�
 const probeBreakdown = sparseRun.stub.logs.filter(function(l) { return l.indexOf('[プローブ内訳]') === 0; }).pop();
 check('[プローブ内訳]ログが出力される', !!probeBreakdown, probeBreakdown);
 
-// --- 密集セル: 旧モードと新モード(フォールバック経由)の子グリッド生成数が一致する ---
-const denseTypeGroups = runCrawlWithStrategy('type_groups', [DENSE_CELL]);
-const denseProbe = runCrawlWithStrategy('probe', [DENSE_CELL]);
+// --- 密集セル: A/B/C/Dへフォールバックせず、プローブ1コールだけで子グリッドを生成する ---
+const denseRun = runCrawl([DENSE_CELL]);
 const countStatus = function(rows, status) {
   return rows.slice(1).filter(function(r) { return r[4] === status; }).length;
 };
-check('密集セルの「密集(分割済み)」件数が旧モードと新モードで一致する(ともに1件)',
-  countStatus(denseTypeGroups.gridRows, '密集(分割済み)') === 1 &&
-  countStatus(denseProbe.gridRows, '密集(分割済み)') === 1,
-  'type_groups=' + countStatus(denseTypeGroups.gridRows, '密集(分割済み)') +
-  ' / probe=' + countStatus(denseProbe.gridRows, '密集(分割済み)'));
+check('密集セルに「密集(分割済み)」が1件付く',
+  countStatus(denseRun.gridRows, '密集(分割済み)') === 1,
+  '件数=' + countStatus(denseRun.gridRows, '密集(分割済み)'));
+check('密集セルもプローブ1コールだけで飽和判定できる(A/B/C/Dへフォールバックしない)',
+  denseRun.stub.requestCount() === 1, 'requestCount=' + denseRun.stub.requestCount());
 
-// --- 計測コール数=実HTTPリクエスト数(密集セルのフォールバック込みでも成り立つこと) ---
-const probeSummary = denseProbe.stub.logs.filter(function(l) { return l.indexOf('APIコール回数:') !== -1; }).pop();
-const probeReported = probeSummary && Number(probeSummary.match(/APIコール回数: (\d+)/)[1]);
-check('プローブモードでも計測コール数が実際のHTTPリクエスト数と一致する(密集セルのフォールバック込み)',
-  probeReported === denseProbe.stub.requestCount(),
-  '計測=' + probeReported + ' / 実リクエスト=' + denseProbe.stub.requestCount());
-
-// --- 疎セル: 旧モードと新モードで取得する Place ID 集合が完全一致すること ---
-const sparseTypeGroups = runCrawlWithStrategy('type_groups', [SPARSE_CELL]);
-const sparseProbe = runCrawlWithStrategy('probe', [SPARSE_CELL]);
-const idSet = function(rows) {
-  return rows.slice(1).map(function(r) { return r[api.PLACE_ID_COLUMN - 1]; }).sort();
-};
-check('疎セルの取得Place ID集合が旧モードと新モードで一致する',
-  JSON.stringify(idSet(sparseTypeGroups.dataRows)) === JSON.stringify(idSet(sparseProbe.dataRows)),
-  'type_groups=' + JSON.stringify(idSet(sparseTypeGroups.dataRows)) +
-  ' / probe=' + JSON.stringify(idSet(sparseProbe.dataRows)));
+// --- 計測コール数=実HTTPリクエスト数(密集セルでも成り立つこと) ---
+const denseSummary = denseRun.stub.logs.filter(function(l) { return l.indexOf('APIコール回数:') !== -1; }).pop();
+const denseReported = denseSummary && Number(denseSummary.match(/APIコール回数: (\d+)/)[1]);
+check('密集セルでも計測コール数が実際のHTTPリクエスト数と一致する',
+  denseReported === denseRun.stub.requestCount(),
+  '計測=' + denseReported + ' / 実リクエスト=' + denseRun.stub.requestCount());
 
 // --- 被覆漏れ警告: point_of_interest/establishment のみの店を返す密集セル ---
-const uncoveredRun = runCrawlWithStrategy('probe', [DENSE_UNCOVERED_CELL]);
+const uncoveredRun = runCrawl([DENSE_UNCOVERED_CELL]);
 const warningLog = uncoveredRun.stub.logs.filter(function(l) { return l.indexOf('[被覆漏れ]') === 0; });
 check('プローブ集合で被覆されない店が新規取得されると警告ログが出る', warningLog.length > 0, warningLog.length + '件');
 const uncoveredSummary = uncoveredRun.stub.logs.filter(function(l) { return l.indexOf('[プローブ内訳]') === 0; }).pop();
