@@ -14,5 +14,6 @@
 !lib/api/PlaceSearchFieldMask.js
 !lib/crawler/WebsiteCategory.js
 !lib/crawler/PlaceRowWriter.js
+!lib/crawler/PlaceDataSheetFilter.js
 !lib/crawler/PlaceDataSchemaMigration.js
 !appsscript.json
