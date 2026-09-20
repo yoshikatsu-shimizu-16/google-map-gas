@@ -1,24 +1,24 @@
 /**
  * [エントリーポイント/調査用]
- * 飽和したマス(20件以上)を4分割した子マスに、プローブを1コールずつ投げて深さを測る。
+ * 飽和したマス(20件以上)を4分割し、子マスにプローブを1コールずつ投げて深さを測る。
+ * 何度でも実行でき、そのたびに1段ずつ深く掘る。
  *
- * ねらい: surveyAllCells で 638マス中 220マス(34.5%)が飽和と分かった。飽和マスの
- * 扱い方でコストが大きく変わるが、どちらが安いかは「4分割で足りるか」で決まる。
+ * ねらい: 収穫(Enterprise枠)で叩く必要があるのは「20件未満と分かっているマス」だけ。
+ * 飽和マスに無駄打ちしないで済むよう、全域が20件未満に割れるまで Pro枠で先に測る。
+ * Pro枠で測った1コールは、Enterprise枠の無駄な1コールを消す。
  *
- *   タイプ分割(現行) … 4(A/B/C/D) + 7(グループAの細分化) = 11コール
- *   4分割           … 1(親のプローブ) + 4(子のプローブ) = 5コール
- *                      ただし子がまだ飽和するなら孫16個で +16コール
- *
- * 20件以上としか分からない状態では選べないので、ここで1段掘って確かめる。
+ * 実測(2026-09-20):
+ *   1段目 … 220の飽和マスを4分割 → 50.9%が解決。179の子マスがまだ飽和
+ *   タイプ分割(4+7=11コール)より4分割(1+4=5コール)のほうが安く、解決率も同等以上
  *
  * コスト: Pro段なので **Enterprise枠(営業用)を消費しない**。飽和マス1つにつき4コール。
  *
  * 安全性: 「グリッド一覧」に子グリッドを追加しない。本番の進捗を変えずに測るのが目的で、
  * 追加すると crawlAllGrids が営業用の枠でそれを処理してしまう。座標は計算するだけで、
- * 結果は「調査(子マス)」シートにのみ書く。
+ * 結果は「調査(分割マス)」シートにのみ書く。
  *
- * 再実行すると未調査の親マスから続きから進む。親マス単位で4件まとめて記録するので、
- * 途中で止まっても中途半端な親は残らない(次回やり直される)。
+ * 親マス単位で4件まとめて記録するので、途中で止まっても中途半端な親は残らない
+ * (次回やり直される)。
  *
  * @returns {void}
  */
@@ -43,42 +43,40 @@ function surveySaturatedCells() {
     return;
   }
 
-  Logger.log('===== 飽和マスの深さ調査(Pro段・営業用の枠は使いません) =====');
+  Logger.log('===== 飽和マスの分割調査(Pro段・営業用の枠は使いません) =====');
 
-  const childSheet = ensureSheetWithHeaders(spreadsheet, '調査(子マス)', SATURATED_CHILD_HEADERS);
-  const doneParentIds = readSurveyedParentIds(childSheet);
-  const parents = readSaturatedParents(cellSheet).filter(function(p) { return !doneParentIds.has(p.gridId); });
+  const subSheet = ensureSubdividedCellSheet(spreadsheet, cellSheet);
+  const surveyed = readSubdividedCells(subSheet);
+  const parents = collectCellsNeedingSubdivision(cellSheet, surveyed);
 
-  Logger.log('飽和マス: ' + (parents.length + doneParentIds.size) + ' / 調査済み: ' + doneParentIds.size);
   if (parents.length === 0) {
-    Logger.log('未調査の飽和マスはありません。');
-    reportSaturatedChildDepth(childSheet);
+    Logger.log('分割が必要なマスはありません。全域が20件未満に割れています。');
+    reportSubdivisionDepth(subSheet, 0);
     return;
   }
 
-  const callsPerParent = CHILD_CELLS_PER_PARENT;
   const affordableParents = maxCalls === null
     ? parents.length
-    : Math.floor(maxCalls / callsPerParent);
+    : Math.floor(maxCalls / CHILD_CELLS_PER_PARENT);
   if (affordableParents === 0) {
-    Logger.log('未調査: ' + parents.length + '親マス / 実行すれば ' +
-      (parents.length * callsPerParent) + ' コール消費します(親1つにつき子4コール、すべてPro段)');
+    Logger.log('未分割の飽和マス: ' + parents.length + ' / 実行すれば ' +
+      (parents.length * CHILD_CELLS_PER_PARENT) + ' コール消費します(親1つにつき子4コール、すべてPro段)');
     Logger.log(SURVEY_MAX_CALLS_PROP + ' が ' + maxCalls +
       ' のため、ここで終了します(親1つに4コール必要なので刻むなら4の倍数で指定してください)。');
     return;
   }
   const plannedParents = Math.min(parents.length, affordableParents);
-  Logger.log('未調査: ' + parents.length + '親マス / 今回消費するコール数: ' +
-    (plannedParents * callsPerParent) + '(親' + plannedParents + '個 × 子4コール、すべてPro段)');
+  Logger.log('未分割の飽和マス: ' + parents.length + ' / 今回消費するコール数: ' +
+    (plannedParents * CHILD_CELLS_PER_PARENT) + '(親' + plannedParents + '個 × 子4コール、すべてPro段)');
 
   const rows = [];
-  let nextRow = childSheet.getLastRow() + 1;
+  let nextRow = subSheet.getLastRow() + 1;
   let surveyedParents = 0, resolvedParents = 0, stillSaturatedChildren = 0;
   let stoppedReason = '';
 
   const flush = function() {
     if (rows.length === 0) return;
-    childSheet.getRange(nextRow, 1, rows.length, SATURATED_CHILD_HEADERS.length).setValues(rows);
+    subSheet.getRange(nextRow, 1, rows.length, SUBDIVIDED_CELL_HEADERS.length).setValues(rows);
     nextRow += rows.length;
     rows.length = 0;
   };
@@ -107,12 +105,12 @@ function surveySaturatedCells() {
           stoppedReason = '利用上限に達したため中断しました: ' + result.errorText;
           break;
         }
-        parentRows.push(toSaturatedChildRow(parent, child, -1, 'エラー'));
+        parentRows.push(toSubdividedCellRow(parent, child, -1, 'エラー'));
         continue;
       }
       const found = result.places.length;
       if (found >= 20) saturatedChildren++;
-      parentRows.push(toSaturatedChildRow(parent, child, found, found >= 20 ? '飽和(20件以上)' : ''));
+      parentRows.push(toSubdividedCellRow(parent, child, found, found >= 20 ? '飽和(20件以上)' : ''));
     }
     if (quotaHit) break; // この親は記録しない(次回まるごとやり直す)
 
@@ -132,112 +130,227 @@ function surveySaturatedCells() {
   flush();
 
   Logger.log('--- 今回の調査 ---');
-  Logger.log('調査した親マス: ' + surveyedParents +
+  Logger.log('分割した親マス: ' + surveyedParents +
     ' / 4分割で解決: ' + resolvedParents +
     ' / まだ飽和している子マス: ' + stillSaturatedChildren);
   if (stoppedReason) Logger.log('→ ' + stoppedReason);
+  if (stillSaturatedChildren > 0) {
+    Logger.log('→ まだ飽和しているマスがあります。もう一度実行すると、さらに1段掘ります。');
+  }
 
-  reportSaturatedChildDepth(childSheet);
+  // 残数はシートを読み直して数える。「飽和しているが既に分割済み」のマスを
+  // 未処理として数えてしまわないため(分割済みかどうかは子行の有無でしか分からない)。
+  const remaining = collectCellsNeedingSubdivision(cellSheet, readSubdividedCells(subSheet));
+  reportSubdivisionDepth(subSheet, remaining.length);
 }
 
-/** 子マス単位の記録。親ごとに4行が並ぶ。 */
-const SATURATED_CHILD_HEADERS = [
+/**
+ * 分割マスの記録。セルIDはパス形式(例: 301-北東-南西)で、何段掘っても一意になる。
+ * 「調査(マス)」のマスと合わせて、全域の木構造を表す。
+ */
+const SUBDIVIDED_CELL_HEADERS = [
+  'セルID', '親セルID', '階層', '中心緯度', '中心経度', '半径m', '取得件数', '備考', '確認日時'
+];
+
+/** 旧スキーマ(1段目だけを想定していた頃の列)。移行の判定に使う。 */
+const LEGACY_SUBDIVIDED_CELL_HEADERS = [
   '親グリッドID', '象限', '中心緯度', '中心経度', '半径m', '取得件数', '備考', '確認日時'
 ];
 
 /**
- * 「調査(マス)」から飽和した(20件以上の)マスを読む。
- * @param {Sheet} cellSheet
- * @returns {Array<{gridId: number, lat: number, lng: number, radius: number}>}
+ * 掘り進める深さの上限。これ以上は分割せず、人の確認に委ねる。
+ * 階層6は1辺が十数mで、そこに20件あるなら1棟のビルに集中しているケース。
+ * 自動分割では解けないので、無限に掘らないための歯止めとして置いている。
  */
-function readSaturatedParents(cellSheet) {
+const SURVEY_MAX_TIER = 6;
+
+/**
+ * 分割マスのシートを用意する。旧スキーマ(1段目専用)のシートがあれば内容を引き継ぐ。
+ *
+ * 移行では親の階層を「調査(マス)」から引く。旧スキーマは親グリッドIDしか持っておらず、
+ * 階層を記録していなかったため。既に投じた Pro枠のコールを捨てないための処理。
+ *
+ * @param {Spreadsheet} spreadsheet
+ * @param {Sheet} cellSheet - 「調査(マス)」
+ * @returns {Sheet}
+ */
+function ensureSubdividedCellSheet(spreadsheet, cellSheet) {
+  const current = spreadsheet.getSheetByName('調査(分割マス)');
+  if (current) return current;
+
+  const sheet = spreadsheet.insertSheet('調査(分割マス)');
+  sheet.appendRow(SUBDIVIDED_CELL_HEADERS);
+  sheet.setFrozenRows(1);
+
+  const legacy = spreadsheet.getSheetByName('調査(子マス)');
+  if (!legacy || legacy.getLastRow() < 2) return sheet;
+
+  const header = legacy.getRange(1, 1, 1, LEGACY_SUBDIVIDED_CELL_HEADERS.length).getValues()[0];
+  if (header.join('|') !== LEGACY_SUBDIVIDED_CELL_HEADERS.join('|')) return sheet;
+
+  const tierByGridId = readCellTiers(cellSheet);
+  const migrated = legacy.getRange(2, 1, legacy.getLastRow() - 1, LEGACY_SUBDIVIDED_CELL_HEADERS.length)
+    .getValues()
+    .map(function(row) {
+      // 旧: [親グリッドID, 象限, 緯度, 経度, 半径, 件数, 備考, 日時]
+      const parentId = row[0];
+      const parentTier = tierByGridId[parentId] === undefined ? 0 : tierByGridId[parentId];
+      return [parentId + '-' + row[1], String(parentId), parentTier + 1,
+        row[2], row[3], row[4], row[5], row[6], row[7]];
+    });
+  sheet.getRange(2, 1, migrated.length, SUBDIVIDED_CELL_HEADERS.length).setValues(migrated);
+  Logger.log('「調査(子マス)」の ' + migrated.length + '行を「調査(分割マス)」へ引き継ぎました' +
+    '(1段目だけの形式から、任意の深さを扱える形式へ)。');
+  return sheet;
+}
+
+/**
+ * 「調査(マス)」からグリッドIDごとの階層を読む。
+ * @param {Sheet} cellSheet
+ * @returns {Object<string, number>}
+ */
+function readCellTiers(cellSheet) {
+  const tierByGridId = {};
   const lastRow = cellSheet.getLastRow();
-  const values = cellSheet.getRange(2, 1, lastRow - 1, AREA_SURVEY_CELL_HEADERS.length).getValues();
+  if (lastRow < 2) return tierByGridId;
+  const idIdx = AREA_SURVEY_CELL_HEADERS.indexOf('グリッドID');
+  const tierIdx = AREA_SURVEY_CELL_HEADERS.indexOf('階層');
+  cellSheet.getRange(2, 1, lastRow - 1, AREA_SURVEY_CELL_HEADERS.length).getValues()
+    .forEach(function(row) { tierByGridId[row[idIdx]] = row[tierIdx] || 0; });
+  return tierByGridId;
+}
+
+/**
+ * 「調査(分割マス)」の内容を読む。
+ * @param {Sheet} subSheet
+ * @returns {{byId: Object<string, Object>, parentIds: Object<string, boolean>}}
+ *   parentIds は「既に分割済みのセルID」の集合(子が1行でもあれば分割済み)
+ */
+function readSubdividedCells(subSheet) {
+  const byId = {};
+  const parentIds = {};
+  const lastRow = subSheet.getLastRow();
+  if (lastRow < 2) return { byId: byId, parentIds: parentIds };
+
+  subSheet.getRange(2, 1, lastRow - 1, SUBDIVIDED_CELL_HEADERS.length).getValues()
+    .forEach(function(row) {
+      byId[row[0]] = {
+        cellId: row[0], parentId: row[1], tier: row[2],
+        lat: row[3], lng: row[4], radius: row[5], count: row[6]
+      };
+      parentIds[row[1]] = true;
+    });
+  return { byId: byId, parentIds: parentIds };
+}
+
+/**
+ * これから分割すべきマスを集める。「調査(マス)」と「調査(分割マス)」の両方から、
+ * 飽和していて、まだ子を測っていないものを拾う。これにより実行のたびに1段ずつ深くなる。
+ *
+ * @param {Sheet} cellSheet
+ * @param {{byId: Object, parentIds: Object}} surveyed
+ * @returns {Array<{cellId: string, tier: number, lat: number, lng: number, radius: number}>}
+ */
+function collectCellsNeedingSubdivision(cellSheet, surveyed) {
+  const needs = [];
+  const isSaturated = function(count) { return count !== '' && count !== null && count >= 20; };
+
+  // グリッド一覧由来のマス
   const idIdx = AREA_SURVEY_CELL_HEADERS.indexOf('グリッドID');
   const latIdx = AREA_SURVEY_CELL_HEADERS.indexOf('中心緯度');
   const lngIdx = AREA_SURVEY_CELL_HEADERS.indexOf('中心経度');
   const radiusIdx = AREA_SURVEY_CELL_HEADERS.indexOf('半径m');
+  const tierIdx = AREA_SURVEY_CELL_HEADERS.indexOf('階層');
   const countIdx = AREA_SURVEY_CELL_HEADERS.indexOf('取得件数');
 
-  return values
-    .filter(function(row) { return row[countIdx] !== '' && row[countIdx] >= 20; })
-    .map(function(row) {
-      return { gridId: row[idIdx], lat: row[latIdx], lng: row[lngIdx], radius: row[radiusIdx] };
+  cellSheet.getRange(2, 1, cellSheet.getLastRow() - 1, AREA_SURVEY_CELL_HEADERS.length).getValues()
+    .forEach(function(row) {
+      const cellId = String(row[idIdx]);
+      if (!isSaturated(row[countIdx])) return;
+      if (surveyed.parentIds[cellId]) return;         // 分割済み
+      if ((row[tierIdx] || 0) >= SURVEY_MAX_TIER) return;
+      needs.push({ cellId: cellId, tier: row[tierIdx] || 0,
+        lat: row[latIdx], lng: row[lngIdx], radius: row[radiusIdx] });
     });
-}
 
-/**
- * 調査済みの親グリッドIDを読む。再実行時に同じ親を二度叩かないため。
- * @param {Sheet} childSheet
- * @returns {Set<number>}
- */
-function readSurveyedParentIds(childSheet) {
-  const ids = new Set();
-  const lastRow = childSheet.getLastRow();
-  if (lastRow < 2) return ids;
-  childSheet.getRange(2, 1, lastRow - 1, 1).getValues().forEach(function(row) {
-    if (row[0] !== '' && row[0] !== null) ids.add(row[0]);
+  // 分割で生まれたマス(2段目以降)
+  Object.keys(surveyed.byId).forEach(function(cellId) {
+    const cell = surveyed.byId[cellId];
+    if (!isSaturated(cell.count)) return;
+    if (surveyed.parentIds[cellId]) return;
+    if (cell.tier >= SURVEY_MAX_TIER) return;
+    needs.push({ cellId: cellId, tier: cell.tier, lat: cell.lat, lng: cell.lng, radius: cell.radius });
   });
-  return ids;
+
+  // 浅い順に処理する。深く掘る前に同じ深さを揃えたほうが、途中で止めたときに
+  // 「いまどの深さまで見えているか」が読みやすい。
+  needs.sort(function(a, b) { return a.tier - b.tier; });
+  return needs;
 }
 
 /**
- * 子マス1件の記録行を組み立てる。
- * @param {{gridId: number}} parent
+ * 分割マス1件の記録行を組み立てる。
+ * @param {{cellId: string, tier: number}} parent
  * @param {{label: string, lat: number, lng: number, radius: number}} child
  * @param {number} foundCount - 取得件数(エラー時は -1)
  * @param {string} note
  * @returns {Array}
  */
-function toSaturatedChildRow(parent, child, foundCount, note) {
+function toSubdividedCellRow(parent, child, foundCount, note) {
   return [
-    parent.gridId, child.label, child.lat, child.lng, child.radius,
+    parent.cellId + '-' + child.label, parent.cellId, parent.tier + 1,
+    child.lat, child.lng, child.radius,
     foundCount < 0 ? '' : foundCount, note, new Date()
   ];
 }
 
 /**
- * 集まった子マスの密度から、4分割で足りるのかを報告する。
- * これが分かると、飽和マスをタイプ分割(11コール)と空間分割(5コール)のどちらで
- * 処理すべきかが決まる。
+ * 分割結果を階層ごとに報告する。「あと何マス掘れば全域が20件未満になるか」が読める。
  *
- * @param {Sheet} childSheet
+ * @param {Sheet} subSheet
+ * @param {number} pendingCount - まだ分割していない飽和マスの数。飽和していても
+ *   既に分割済みのマスは掘る必要がないため、行から数えずに呼び出し側から受け取る。
  * @returns {void}
  */
-function reportSaturatedChildDepth(childSheet) {
-  const lastRow = childSheet.getLastRow();
+function reportSubdivisionDepth(subSheet, pendingCount) {
+  const lastRow = subSheet.getLastRow();
   if (lastRow < 2) return;
 
-  const values = childSheet.getRange(2, 1, lastRow - 1, SATURATED_CHILD_HEADERS.length).getValues();
-  const parentIdx = SATURATED_CHILD_HEADERS.indexOf('親グリッドID');
-  const countIdx = SATURATED_CHILD_HEADERS.indexOf('取得件数');
+  const values = subSheet.getRange(2, 1, lastRow - 1, SUBDIVIDED_CELL_HEADERS.length).getValues();
+  const tierIdx = SUBDIVIDED_CELL_HEADERS.indexOf('階層');
+  const countIdx = SUBDIVIDED_CELL_HEADERS.indexOf('取得件数');
 
-  const counts = values.map(function(r) { return r[countIdx]; }).filter(function(v) { return v !== '' && v !== null; });
-  if (counts.length === 0) return;
-
-  const buckets = [
-    { label: '0件            ', test: function(n) { return n === 0; } },
-    { label: '1〜19件(解決)   ', test: function(n) { return n >= 1 && n <= 19; } },
-    { label: '20件以上(まだ飽和)', test: function(n) { return n >= 20; } }
-  ];
-  Logger.log('--- 累計: 飽和マスを4分割した子マスの分布(' + counts.length + 'マス) ---');
-  buckets.forEach(function(b) {
-    const n = counts.filter(b.test).length;
-    Logger.log('  ' + b.label + ': ' + n + 'マス (' + (n / counts.length * 100).toFixed(1) + '%)');
+  const byTier = {};
+  values.forEach(function(row) {
+    const tier = row[tierIdx];
+    if (!byTier[tier]) byTier[tier] = { total: 0, empty: 0, resolved: 0, saturated: 0 };
+    const b = byTier[tier];
+    b.total++;
+    const n = row[countIdx];
+    if (n === '' || n === null) return;
+    if (n === 0) b.empty++;
+    else if (n < 20) b.resolved++;
+    else b.saturated++;
   });
 
-  // 親単位で「4分割で解決したか」を数える。1つでも飽和した子が残れば未解決。
-  const saturatedByParent = {};
-  values.forEach(function(r) {
-    const parentId = r[parentIdx];
-    if (saturatedByParent[parentId] === undefined) saturatedByParent[parentId] = 0;
-    if (r[countIdx] !== '' && r[countIdx] >= 20) saturatedByParent[parentId]++;
+  Logger.log('--- 累計: 分割マスの階層別内訳 ---');
+  Object.keys(byTier).sort().forEach(function(tier) {
+    const b = byTier[tier];
+    Logger.log('  階層' + tier + ': ' + b.total + 'マス' +
+      ' / 0件 ' + b.empty + ' / 1〜19件 ' + b.resolved + ' / 飽和 ' + b.saturated);
   });
-  const parentIds = Object.keys(saturatedByParent);
-  const resolved = parentIds.filter(function(id) { return saturatedByParent[id] === 0; }).length;
 
-  Logger.log('  4分割で解決した親マス: ' + resolved + '/' + parentIds.length +
-    ' (' + (resolved / parentIds.length * 100).toFixed(1) + '%)');
-  Logger.log('  → 解決した親は 1+4=5コール。残りはさらに分割が要る(孫16個で +16コール)。');
-  Logger.log('  参考: 現行のタイプ分割は飽和マス1つにつき 4+7=11コール。');
+  // 収穫(Enterprise枠)で叩く必要があるのは「1〜19件と分かっているマス」だけ。
+  // 飽和マスは分割すればさらに減るので、この数字が収穫コストの下限になる。
+  const harvestable = values.filter(function(row) {
+    const n = row[countIdx];
+    return n !== '' && n !== null && n >= 1 && n < 20;
+  }).length;
+  Logger.log('  収穫対象(1〜19件)の分割マス: ' + harvestable + 'マス');
+  if (pendingCount > 0) {
+    Logger.log('  未分割の飽和マス: ' + pendingCount + ' → もう一度実行すると ' +
+      (pendingCount * CHILD_CELLS_PER_PARENT) + 'コールで1段掘ります。');
+  } else {
+    Logger.log('  飽和は残っていません。全域が20件未満に割れました。');
+  }
 }

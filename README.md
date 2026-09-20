@@ -44,7 +44,7 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `entrypoints/auditProbeSetCoverage.js` | エントリーポイント | 「全飲食店データ」の実測値からプローブ集合の被覆率を判定(APIコール0) |
 | `entrypoints/compareProbeSetWithTypeGroups.js` | エントリーポイント | 複数セルで傘型プローブ1コールと4グループの Place ID 差分を検証(**Pro段。営業用の枠を使わない**) |
 | `lib/survey/SurveyCallBudget.js` | 内部ヘルパー | 調査系が1回の実行で使ってよいコール数(`SURVEY_MAX_CALLS`)の読み取り |
-| `entrypoints/surveySaturatedCells.js` | エントリーポイント | 飽和マスを4分割した子マスの密度を測り、4分割で足りるかを判定 |
+| `entrypoints/surveySaturatedCells.js` | エントリーポイント | 飽和マスを4分割して密度を測る。実行のたびに1段ずつ深く掘り、全域が20件未満に割れるまで繰り返す |
 | `entrypoints/surveyAllCells.js` | エントリーポイント | 全マスに1コールずつ投げ、密度とタイプの実態を Pro枠で洗い出す |
 | `lib/survey/EmptyCellPrediction.js` | データ(自動生成) | OSMが飲食店0件と見たグリッドIDの一覧。`npm run predict-empty` で再生成 |
 | `lib/survey/OsmFoodPoiSource.js` | ローカル用 | Overpass のクエリ組み立てとレスポンス変換(純関数。GASへはデプロイしない) |
@@ -179,7 +179,7 @@ GASの「実行」メニューやトリガー設定画面に並ぶ関数のう�
 | `listTriggers` | `entrypoints/triggers.js` | 確認用 | 現在設定されているトリガー一覧をログ出力 | 副作用なし |
 | `checkMonthlyApiUsage` | `entrypoints/checkMonthlyApiUsage.js` | 確認用 | **SKUごとの**月間APIコール数と検索方式をログ出力 | 副作用なし。**APIコール0**。カウンタはスクリプト単位で、APIキーを別プロジェクトに替えても引き継がれる |
 | `resetRestaurantData` | `entrypoints/resetRestaurantData.js` | 手動実行(初回・データ再取得時のみ) | 「全飲食店データ」シートのデータ行を全削除 | データ消去を伴うため実行前に要確認 |
-| `surveySaturatedCells` | `entrypoints/surveySaturatedCells.js` | 調査用 | 飽和マス(20件以上)を4分割した子マスにプローブを投げ「調査(子マス)」に記録 | **Pro段のため営業用の枠を消費しない**。親1つにつき4コール。**「グリッド一覧」に子グリッドを追加しない**。先に `surveyAllCells` が必要 |
+| `surveySaturatedCells` | `entrypoints/surveySaturatedCells.js` | 調査用 | 飽和マス(20件以上)を4分割し「調査(分割マス)」に記録。**実行のたびに1段ずつ深く掘る** | **Pro段のため営業用の枠を消費しない**。親1つにつき4コール。**「グリッド一覧」に子グリッドを追加しない**。先に `surveyAllCells` が必要 |
 | `surveyAllCells` | `entrypoints/surveyAllCells.js` | 調査用 | 全マスに1コールずつ投げ、密度とタイプの実態を「調査(マス)」「調査(店)」に記録 | **Pro段のため営業用の枠を消費しない**。1マス1コール固定。本番シートに書き込まない。`SURVEY_MAX_CALLS=0` で試算のみ |
 | `surveyEmptyCells` | `entrypoints/surveyEmptyCells.js` | 調査用 | OSMが0件と見た**未処理**セルを1コールずつ実地確認し「調査ログ」に記録 | **Pro段のため営業用の枠(1,000/月)を消費しない**。消費コール数=対象セル数。`SURVEY_MAX_CALLS=0` で試算のみ。本番シートに書き込まない |
 | `auditProbeSetCoverage` | `entrypoints/auditProbeSetCoverage.js` | 確認用 | 実測データからプローブ集合の被覆率・最小被覆集合をログ出力 | 副作用なし。**APIコール0**。`SEARCH_STRATEGY=probe` へ切り替える前に実行すること。**「全タイプ」列が埋まった行が必要**(下記の前提を参照) |
