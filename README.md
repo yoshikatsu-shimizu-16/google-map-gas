@@ -42,7 +42,7 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `lib/crawler/TypeGroupCellSearch.js` | 内部ヘルパー | 1セルを頻度別グループ(A/B/C/D)で探索する手順(`type_groups`方式の実体、`probe`方式のフォールバック先) |
 | `lib/crawler/ProbeFirstCellSearch.js` | 内部ヘルパー | 1セルをプローブ集合優先で探索する手順(`probe`方式の実体) |
 | `entrypoints/auditProbeSetCoverage.js` | エントリーポイント | 「全飲食店データ」の実測値からプローブ集合の被覆率を判定(APIコール0) |
-| `entrypoints/compareProbeSetWithTypeGroups.js` | エントリーポイント | 指定グリッドでプローブ集合とタイプグループの Place ID 差分を確認(5〜25コール) |
+| `entrypoints/compareProbeSetWithTypeGroups.js` | エントリーポイント | 複数セルで傘型プローブ1コールと4グループの Place ID 差分を検証(**Pro段。営業用の枠を使わない**) |
 | `lib/survey/EmptyCellPrediction.js` | データ(自動生成) | OSMが飲食店0件と見たグリッドIDの一覧。`npm run predict-empty` で再生成 |
 | `lib/survey/OsmFoodPoiSource.js` | ローカル用 | Overpass のクエリ組み立てとレスポンス変換(純関数。GASへはデプロイしない) |
 | `lib/survey/CellDensityIndex.js` | ローカル用 | POIをセル矩形・検索円に対応付けて件数を引く(純関数。GASへはデプロイしない) |
@@ -158,8 +158,8 @@ Enterprise が `MONTHLY_API_CALL_COUNT`(運用中のカウントを引き継ぐ�
   **`0` にすると「実行したら何コール必要か」を報告するだけで、Googleへのリクエストは
   1件も発生しません**(請求先を紐付けたキーに切り替えた直後など、消費量を確定させて
   から実行したいときに使う)。未設定なら上限なし
-- `PROBE_COMPARISON_GRID_ID`(任意) — `compareProbeSetWithTypeGroups` の対象グリッドID。
-  未設定なら0コールで案内ログのみを出して終了する(実行メニューからの誤爆防止)
+- `PROBE_SURVEY_SAMPLE_SIZE`(任意) — `compareProbeSetWithTypeGroups` が1回の実行で検証する
+  セル数。未設定なら20。消費は1セルあたり、飽和なら1コール・判定できれば5コール(すべてPro段)
 
 ## エントリーポイント一覧
 
@@ -178,7 +178,7 @@ GASの「実行」メニューやトリガー設定画面に並ぶ関数のう�
 | `resetRestaurantData` | `entrypoints/resetRestaurantData.js` | 手動実行(初回・データ再取得時のみ) | 「全飲食店データ」シートのデータ行を全削除 | データ消去を伴うため実行前に要確認 |
 | `surveyEmptyCells` | `entrypoints/surveyEmptyCells.js` | 調査用 | OSMが0件と見た**未処理**セルを1コールずつ実地確認し「調査ログ」に記録 | **Pro段のため営業用の枠(1,000/月)を消費しない**。消費コール数=対象セル数。`SURVEY_MAX_CALLS=0` で試算のみ。本番シートに書き込まない |
 | `auditProbeSetCoverage` | `entrypoints/auditProbeSetCoverage.js` | 確認用 | 実測データからプローブ集合の被覆率・最小被覆集合をログ出力 | 副作用なし。**APIコール0**。`SEARCH_STRATEGY=probe` へ切り替える前に実行すること。**「全タイプ」列が埋まった行が必要**(下記の前提を参照) |
-| `compareProbeSetWithTypeGroups` | `entrypoints/compareProbeSetWithTypeGroups.js` | 確認用 | 指定グリッドでプローブ集合とタイプグループの Place ID 差分をログ出力 | `PROBE_COMPARISON_GRID_ID` 未設定なら0コールで案内のみ。設定時は5〜25コール |
+| `compareProbeSetWithTypeGroups` | `entrypoints/compareProbeSetWithTypeGroups.js` | 調査用 | 複数セルで傘型プローブ1コールと4グループ(A/B/C/D)の差分を検証し「調査ログ(傘型)」に記録 | **Pro段のため営業用の枠を消費しない**。1セル5コール(飽和なら1)。**「全飲食店データ」に書き込まない**(Pro段は評価もHPも無いため) |
 
 ## 実行順序(初回セットアップ)
 
