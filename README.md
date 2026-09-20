@@ -43,15 +43,17 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `lib/crawler/ProbeFirstCellSearch.js` | 内部ヘルパー | 1セルをプローブ集合優先で探索する手順(`probe`方式の実体) |
 | `entrypoints/auditProbeSetCoverage.js` | エントリーポイント | 「全飲食店データ」の実測値からプローブ集合の被覆率を判定(APIコール0) |
 | `entrypoints/compareProbeSetWithTypeGroups.js` | エントリーポイント | 指定グリッドでプローブ集合とタイプグループの Place ID 差分を確認(5〜25コール) |
-| `lib/survey/OsmFoodPoiSource.js` | 内部ヘルパー | OpenStreetMap の飲食系POIを取得(Overpass。APIキー不要・Googleのクォータを消費しない) |
-| `lib/survey/CellDensityIndex.js` | 内部ヘルパー | POIをセル矩形・検索円に対応付けて件数を引く(純関数) |
+| `lib/survey/EmptyCellPrediction.js` | データ(自動生成) | OSMが飲食店0件と見たグリッドIDの一覧。`npm run predict-empty` で再生成 |
+| `lib/survey/OsmFoodPoiSource.js` | ローカル用 | Overpass のクエリ組み立てとレスポンス変換(純関数。GASへはデプロイしない) |
+| `lib/survey/CellDensityIndex.js` | ローカル用 | POIをセル矩形・検索円に対応付けて件数を引く(純関数。GASへはデプロイしない) |
 | `entrypoints/surveyEmptyCells.js` | エントリーポイント | OSMが0件と見たセルをPro段1コールずつで実地確認(**営業用の枠を消費しない**) |
 | `tools/fetchOsmFoodPois.js` | ローカル用 | 上記の共有クエリをローカルから curl で叩き、結果をキャッシュする |
 | `tools/buildDensityMap.js` | ローカル用 | セル別の飲食店密度を見積もり、コール数を試算(`npm run density`) |
+| `tools/generateEmptyCellPrediction.js` | ローカル用 | 0件予測セルの一覧を GAS 用のソースとして生成(`npm run predict-empty`) |
 | `docs/Overview.js` | ドキュメント | プロジェクト全体の設計意図(ワークフロー全体像・密集エリア対策・月間APIコール上限の理由) |
 | `appsscript.json` | 設定 | GASプロジェクトのマニフェスト(タイムゾーン・実行環境など) |
 | `.clasp.json.example` | 設定 | `clasp` 用設定のひな形(実際の `.clasp.json` は各自で作成し、Gitには含めません) |
-| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記27個の `.js` と `appsscript.json` のみに限定する設定 |
+| `.claspignore` | 設定 | `clasp push` 時にアップロードするファイルを上記26個の `.js` と `appsscript.json` のみに限定する設定 |
 
 ## Google Drive 上の Apps Script プロジェクトとの接続方法
 

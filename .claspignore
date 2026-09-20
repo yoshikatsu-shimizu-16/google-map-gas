@@ -23,7 +23,6 @@
 !lib/crawler/SearchStrategyMode.js
 !lib/crawler/TypeGroupCellSearch.js
 !lib/crawler/ProbeFirstCellSearch.js
-!lib/survey/OsmFoodPoiSource.js
-!lib/survey/CellDensityIndex.js
+!lib/survey/EmptyCellPrediction.js
 !entrypoints/surveyEmptyCells.js
 !appsscript.json
