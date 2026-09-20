@@ -1220,5 +1220,54 @@ check('親25個ごとに進捗を出す',
   satMany.logs.some(function(l) { return l.indexOf('進捗: 25/30親マス (100コール済み)') !== -1; }),
   satMany.logs.filter(function(l) { return l.indexOf('進捗:') === 0; }).join(' / ') || '(進捗なし)');
 
+// =====================================================================
+console.log('\n[14] crawlAllGridsの多重実行を防ぐ排他制御(Issue #23)');
+// =====================================================================
+// 日次トリガーの実行が長引いている間に手動再実行したり、トリガーが多重起動したり
+// すると、同じセルに無駄なAPIコールが重複しうる。LockService.getScriptLock() で
+// 他の実行が進行中なら即座に諦める(待たない)ことを検証する。
+const lockRun = installGasGlobals({
+  respondToSearch: function() {
+    return { places: [{
+      id: 'lk_1', displayName: { text: '店' },
+      location: { latitude: 35.80, longitude: 139.95 }, types: ['restaurant']
+    }] };
+  }
+});
+lockRun.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+lockRun.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+lockRun.sheets['グリッド一覧'] = createFakeSheet([
+  api.GRID_SHEET_HEADERS,
+  [1, 35.80, 139.95, 717, '未処理', 0, '', api.GRID_STEP]
+]);
+
+// 他の実行がロックを保持している状態を、テストから直接ロックを取得して再現する
+check('ロックは未取得の状態から始まる(前提の確認)', lockRun.lock.hasLock() === false);
+check('テスト側でロックを取得できる(前提の確認)', lockRun.lock.tryLock(0) === true);
+
+api.crawlAllGrids();
+check('ロック取得中は何もせず終了する(APIコールが発生しない)',
+  lockRun.requestCount() === 0, 'requestCount=' + lockRun.requestCount());
+check('多重実行を検知したログが出る',
+  lockRun.logs.some(function(l) { return l.indexOf('他の crawlAllGrids の実行が進行中') !== -1; }));
+check('グリッドの処理状況は変化しない(未処理のまま)',
+  lockRun.sheets['グリッド一覧'].rows()[1][4] === '未処理');
+
+// ロックを解放すれば、通常どおり処理が進み、終了時に自らロックを解放する
+lockRun.lock.releaseLock();
+api.crawlAllGrids();
+check('ロックを解放すれば通常どおり処理が進む(APIコール1回)',
+  lockRun.requestCount() === 1, 'requestCount=' + lockRun.requestCount());
+check('対象セルが処理される', lockRun.sheets['グリッド一覧'].rows()[1][4] === '処理済み(プローブ)');
+check('正常終了後はロックが解放されている(再実行をブロックしない)', lockRun.lock.hasLock() === false);
+
+// 「未処理のグリッドが無い」早期リターン経路でもロックが解放されること
+// (try の入口だけでなく、途中の return でも finally で確実に解放されるかの確認)
+api.crawlAllGrids();
+check('未処理グリッドが無い早期リターンでもコールは増えない',
+  lockRun.requestCount() === 1, 'requestCount=' + lockRun.requestCount());
+check('早期リターン経路でもロックが解放される',
+  lockRun.lock.hasLock() === false);
+
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);

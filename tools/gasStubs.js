@@ -110,12 +110,34 @@ function createFakeSheet(initialRows, options) {
 }
 
 /**
+ * LockService.getScriptLock() が返す Lock のスタブ。実物と同じく、ロックの状態は
+ * 「取得したLockオブジェクト」ではなく「スクリプト単位」で共有される(同じ
+ * installGasGlobals セッション内で複数回 getScriptLock() を呼んでも同じ状態を指す)。
+ * テストから直接 tryLock/releaseLock を呼び、他の実行が保持中の状態を再現できるように
+ * 生成した lock オブジェクトを戻り値にも含める。
+ * @returns {{tryLock: function(number): boolean, releaseLock: function(): void, hasLock: function(): boolean}}
+ */
+function createScriptLockStub() {
+  let locked = false;
+  return {
+    tryLock: function() {
+      if (locked) return false;
+      locked = true;
+      return true;
+    },
+    releaseLock: function() { locked = false; },
+    hasLock: function() { return locked; }
+  };
+}
+
+/**
  * GAS のグローバルを globalThis に差し込む。
  *
  * @param {Object} [options]
  * @param {function(Object): {places: Object[]}} [options.respondToSearch]
  *   searchNearby のリクエストボディを受け取り、返す places を決める関数。
- * @returns {{sheets: Object, logs: string[], properties: Object, requestCount: function(): number}}
+ * @returns {{sheets: Object, logs: string[], properties: Object, requestCount: function(): number,
+ *   lock: {tryLock: function(number): boolean, releaseLock: function(): void, hasLock: function(): boolean}}}
  */
 function installGasGlobals(options) {
   const opts = options || {};
@@ -123,6 +145,7 @@ function installGasGlobals(options) {
   const logs = [];
   const properties = {};
   let requestCount = 0;
+  const lock = createScriptLockStub();
 
   const spreadsheet = {
     getSheetByName: function(name) { return sheets[name] || null; },
@@ -146,6 +169,7 @@ function installGasGlobals(options) {
   };
   global.Session = { getScriptTimeZone: function() { return 'Asia/Tokyo'; } };
   global.Utilities = { formatDate: function() { return '2026-09'; } };
+  global.LockService = { getScriptLock: function() { return lock; } };
   global.UrlFetchApp = {
     fetch: function(url, opt) {
       requestCount++;
@@ -162,7 +186,8 @@ function installGasGlobals(options) {
     sheets: sheets,
     logs: logs,
     properties: properties,
-    requestCount: function() { return requestCount; }
+    requestCount: function() { return requestCount; },
+    lock: lock
   };
 }
 
