@@ -47,10 +47,14 @@ function createFakeSheet(initialRows, options) {
   // 外しっぱなしになっていないかを検証できるようにするため。
   let filter = null;
 
+  // setValues / appendRow が何回呼ばれたか。1行ずつ書いていないことを検証するのに使う
+  // (シートへのラウンドトリップは実行時間を食い、6分の制限内に回せるAPIコール数を減らす)。
+  let writeCount = 0;
+
   const sheet = {
     clear: function() { cells.length = 0; return sheet; },
     clearContents: function() { cells.length = 0; return sheet; },
-    appendRow: function(values) { cells.push(values.slice()); return sheet; },
+    appendRow: function(values) { writeCount++; cells.push(values.slice()); return sheet; },
     getLastRow: function() { return cells.length; },
     getLastColumn: function() {
       return cells.reduce(function(max, r) { return Math.max(max, r.length); }, 0);
@@ -68,6 +72,7 @@ function createFakeSheet(initialRows, options) {
       return {
         setValue: function(v) { ensure(row, col); cells[row - 1][col - 1] = v; },
         setValues: function(values) {
+          writeCount++;
           values.forEach(function(r, i) {
             ensure(row + i, col + r.length - 1);
             r.forEach(function(v, j) { cells[row + i - 1][col + j - 1] = v; });
@@ -98,6 +103,7 @@ function createFakeSheet(initialRows, options) {
       };
     },
     rows: function() { return cells; },
+    writeCount: function() { return writeCount; },
     filterRange: function() { return filter ? filter.range : null; }
   };
   return sheet;
