@@ -27,6 +27,12 @@
  * 読み方: 「空でない」が多く出るようなら OSM は当てにならないということなので、
  * 0件マスの除外は断念する。「空(確認済み)」がほぼ全てなら、除外してよい。
  *
+ * あわせて、既にクロール済みのセルを使った答え合わせも出す(APIコール0)。予測が0件と
+ * 言ったセルのうち既に探索が済んでいるものは、Googleでの結果がシートに残っている。
+ * ステータスが GRID_STATUS_EMPTY_BY_GROUP_A なら「Googleでも見つからなかった」で予測が
+ * 当たり、それ以外なら店が見つかっていたので外れ。コールを1回も使わずに OSM の
+ * 信頼度が分かるため、76コールを使う前にこの数字を見て判断できる。
+ *
  * @returns {void}
  */
 function surveyEmptyCells() {
@@ -80,6 +86,7 @@ function surveyEmptyCells() {
 
   const gridValues = gridSheet.getRange(2, 1, gridLastRow - 1, GRID_SHEET_COLUMN_COUNT).getValues();
   const targets = [];
+  const doneStatusCounts = {};
   let skippedDone = 0;
   gridValues.forEach(function(row) {
     const gridId = row[0];
@@ -87,11 +94,18 @@ function surveyEmptyCells() {
     if (surveyedGridIds.has(gridId)) return;  // 調査済み
     // 探索が終わったセルは結果が分かっているので調べる必要がない。
     // この調査の目的は「これから探索するセルを飛ばしてよいか」の判断材料を作ること。
-    if (GRID_DONE_STATUSES.indexOf(row[GRID_COL_STATUS - 1]) !== -1) { skippedDone++; return; }
+    // ただし「結果が分かっている」ことは、予測の答え合わせに使えるということでもある。
+    const status = row[GRID_COL_STATUS - 1];
+    if (GRID_DONE_STATUSES.indexOf(status) !== -1) {
+      doneStatusCounts[status] = (doneStatusCounts[status] || 0) + 1;
+      skippedDone++;
+      return;
+    }
     targets.push({ gridId: gridId, lat: row[1], lng: row[2], radius: row[3] });
   });
 
   Logger.log('探索済みのため対象外: ' + skippedDone + 'セル(結果が分かっているので調べる必要がない)');
+  reportPredictionAccuracyFromExploredCells(doneStatusCounts, skippedDone);
   if (targets.length === 0) {
     Logger.log('確認が必要な0件予測セルはありません(すべて調査済み、またはOSMが店を知っています)。');
     return;
@@ -163,6 +177,37 @@ function surveyEmptyCells() {
   if (notEmpty > 0) {
     Logger.log('「空でない」が出ています。OSMの0件だけを根拠にセルを除外するのは危険です。');
   }
+}
+
+/**
+ * 既にクロール済みのセルを使って、OSMの予測がどれだけ当たっていたかを報告する(APIコール0)。
+ *
+ * 予測が0件と言ったセルのうち探索済みのものは、Googleでの結果がシートに残っている。
+ * ステータスが GRID_STATUS_EMPTY_BY_GROUP_A なら「Googleでも見つからなかった」で予測が当たり、
+ * それ以外のステータスなら店が見つかっていたので外れ。
+ *
+ * 注意: GRID_STATUS_EMPTY_BY_GROUP_A は「グループA(頻出39種)が0件」という意味で、
+ * B/C/Dは省略されている。稀なタイプだけの店がある可能性は残るため、的中率は
+ * やや甘めに出る。それでも「OSMがまったく当てにならない」かどうかの判断には使える。
+ *
+ * @param {Object<string, number>} doneStatusCounts - 探索済みセルのステータス別件数
+ * @param {number} skippedDone - 探索済みセルの総数
+ * @returns {void}
+ */
+function reportPredictionAccuracyFromExploredCells(doneStatusCounts, skippedDone) {
+  if (skippedDone === 0) return;
+
+  const agreed = doneStatusCounts[GRID_STATUS_EMPTY_BY_GROUP_A] || 0;
+  const disagreed = skippedDone - agreed;
+  Logger.log('  [答え合わせ(APIコール0)] 探索済みの' + skippedDone + 'セルでOSMの予測を検証:');
+  Logger.log('    Googleでも見つからなかった: ' + agreed + 'セル(予測が当たり)');
+  Logger.log('    Googleでは店が見つかった  : ' + disagreed + 'セル(予測が外れ)');
+  Logger.log('    → 的中率: ' + (agreed / skippedDone * 100).toFixed(1) + '%');
+  if (disagreed > 0) {
+    Logger.log('    外れたセルのステータス内訳: ' + JSON.stringify(doneStatusCounts));
+  }
+  Logger.log('    ※「見つからなかった」はグループA(頻出39種)が0件という意味で、B/C/Dは省略されている。');
+  Logger.log('      稀なタイプだけの店が残っている可能性はあるため、的中率はやや甘めに出る。');
 }
 
 /**

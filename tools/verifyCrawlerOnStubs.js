@@ -83,7 +83,8 @@ const api = new Function(source + `
     SURVEY_LOG_HEADERS: SURVEY_LOG_HEADERS,
     PLACE_TYPE_PROBE_SET: PLACE_TYPE_PROBE_SET,
     OSM_EMPTY_GRID_IDS: OSM_EMPTY_GRID_IDS,
-    TARGET_AREA_BOUNDS: TARGET_AREA_BOUNDS
+    TARGET_AREA_BOUNDS: TARGET_AREA_BOUNDS,
+    GRID_STATUS_EMPTY_BY_GROUP_A: GRID_STATUS_EMPTY_BY_GROUP_A
   };
 `)();
 
@@ -767,6 +768,36 @@ check('探索済みのセルは調査対象から外れる(結果が分かって
 check('対象外にした件数を報告する',
   withDone.logs.some(function(l) { return l.indexOf('探索済みのため対象外: 1セル') !== -1; }),
   withDone.logs.filter(function(l) { return l.indexOf('探索済みのため対象外') === 0; })[0] || '(報告なし)');
+
+// --- 探索済みセルによる答え合わせ(APIコール0) ---
+// 予測が0件と言ったセルのうち探索済みのものは、Googleでの結果がシートに残っている。
+// コールを使う前にOSMの信頼度が分かる。
+const A_ZERO = api.GRID_STATUS_EMPTY_BY_GROUP_A;
+const accuracyCells = [
+  // Googleでも見つからなかった3セル = 予測が当たり
+  [api.OSM_EMPTY_GRID_IDS[0], 35.90, 140.10, 717, A_ZERO, 0, '', 0.01],
+  [api.OSM_EMPTY_GRID_IDS[1], 35.90, 140.09, 717, A_ZERO, 0, '', 0.01],
+  [api.OSM_EMPTY_GRID_IDS[2], 35.90, 140.08, 717, A_ZERO, 0, '', 0.01],
+  // Googleでは店が見つかった1セル = 予測が外れ
+  [api.OSM_EMPTY_GRID_IDS[3], 35.90, 140.07, 717, '処理済み', 0, '', 0.01]
+];
+const accuracy = runSurvey({
+  'グリッド一覧': createFakeSheet([api.GRID_SHEET_HEADERS].concat(accuracyCells.map(function(r) { return r.slice(); })))
+}, null);
+const accuracyLogs = accuracy.logs.join('\n');
+check('答え合わせにAPIコールを使わない', accuracy.requestCount() === 0, accuracy.requestCount() + '回');
+check('予測が当たったセル数を報告する',
+  accuracyLogs.indexOf('Googleでも見つからなかった: 3セル') !== -1,
+  accuracy.logs.filter(function(l) { return l.indexOf('見つからなかった') !== -1; })[0] || '(報告なし)');
+check('予測が外れたセル数を報告する',
+  accuracyLogs.indexOf('Googleでは店が見つかった  : 1セル') !== -1,
+  accuracy.logs.filter(function(l) { return l.indexOf('見つかった  :') !== -1; })[0] || '(報告なし)');
+check('的中率を報告する', accuracyLogs.indexOf('的中率: 75.0%') !== -1,
+  accuracy.logs.filter(function(l) { return l.indexOf('的中率') !== -1; })[0] || '(報告なし)');
+check('外れたセルのステータス内訳を出す(原因を追えるように)',
+  accuracyLogs.indexOf('外れたセルのステータス内訳') !== -1);
+check('探索済みセルが無ければ答え合わせを出さない',
+  survey.logs.every(function(l) { return l.indexOf('答え合わせ') === -1; }));
 
 // --- 使用量の表示はSKUごとに出す(合計だけでは逼迫具合が分からない) ---
 const usageStub = installGasGlobals({});
