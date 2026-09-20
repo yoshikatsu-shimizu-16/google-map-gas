@@ -16,9 +16,10 @@ const sources = ['lib/grid/GridGeometry.js', 'lib/grid/GridOverlapAnalysis.js']
 
 const {
   circleIntersectionArea, overlapFraction, findOverlappingPairs, findRootRadiusMismatches,
-  cellCoverRadiusMeters
+  findOverlapClusters, clusterSizeSummary, cellCoverRadiusMeters
 } = new Function(sources + '\nreturn { circleIntersectionArea, overlapFraction,' +
-  ' findOverlappingPairs, findRootRadiusMismatches, cellCoverRadiusMeters };')();
+  ' findOverlappingPairs, findRootRadiusMismatches, findOverlapClusters, clusterSizeSummary,' +
+  ' cellCoverRadiusMeters };')();
 
 let failures = 0;
 function check(label, ok, detail) {
@@ -120,6 +121,39 @@ check('階層0以外の行は対象外', radiusMismatches.every(function(m) { re
 check('700m決め打ちのズレは対象エリアの緯度帯で十数m規模(実測との整合)',
   Math.abs(correctRadius - 700) >= 10 && Math.abs(correctRadius - 700) <= 30,
   '現行計算値=' + correctRadius + 'm(700mとの差=' + (correctRadius - 700) + 'm)');
+
+// =====================================================================
+console.log('\n[4] findOverlapClusters / clusterSizeSummary');
+// =====================================================================
+// 直接は重ならない A-C も、B を介して同じクラスタにまとまることを確認する
+// (「1クラスタに1件残す」という統合判断の単位を作るための鎖状の連結性)。
+const chainPairs = [
+  { aId: 1, bId: 2 },
+  { aId: 2, bId: 3 }
+];
+const chainClusters = findOverlapClusters(chainPairs);
+check('鎖状につながった3セルが1クラスタになる',
+  chainClusters.length === 1 && chainClusters[0].length === 3,
+  JSON.stringify(chainClusters));
+
+const independentPairs = [
+  { aId: 10, bId: 11 },
+  { aId: 20, bId: 21 },
+  { aId: 20, bId: 22 } // 20-21, 20-22 は同じクラスタ(3件)
+];
+const independentClusters = findOverlapClusters(independentPairs);
+check('独立したペアは別クラスタになる(2件クラスタ×1、3件クラスタ×1)',
+  independentClusters.length === 2 &&
+  independentClusters.some(function(c) { return c.length === 2; }) &&
+  independentClusters.some(function(c) { return c.length === 3; }),
+  JSON.stringify(independentClusters));
+check('クラスタはサイズの降順で並ぶ',
+  independentClusters[0].length >= independentClusters[1].length);
+
+check('クラスタサイズの分布が読める文字列になる',
+  clusterSizeSummary(independentClusters) === '2件クラスタ×1 / 3件クラスタ×1',
+  clusterSizeSummary(independentClusters));
+check('ペアが無ければクラスタも無い', findOverlapClusters([]).length === 0);
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);
