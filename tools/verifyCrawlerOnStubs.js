@@ -1173,6 +1173,26 @@ check('収穫対象(1〜19件)のマス数を報告する',
 const settled = runSaturatedSurvey(deepSecond.sheets, null, respondWith(1));
 check('全域が20件未満に割れたら分割を終える', settled.requestCount() === 0,
   settled.requestCount() + '回');
+// 上限階層で飽和したまま終わったマスを「割り切れた」と誤報告しないこと。
+// 実機では階層6で65マスが飽和したまま残ったのに「全域が20件未満に割れました」と出ていた。
+const atMaxTier = createFakeSheet([api.SUBDIVIDED_CELL_HEADERS,
+  ['x-北東', 'x', 6, 35.80, 139.95, 11, 20, '飽和(20件以上)', new Date()],
+  ['x-北西', 'x', 6, 35.80, 139.96, 11, 5, '', new Date()]
+]);
+const terminal = runSaturatedSurvey({
+  // 疎なマス1件だけ。飽和マスが無いので分割は走らず、報告だけが出る
+  '調査(マス)': createFakeSheet([api.AREA_SURVEY_CELL_HEADERS,
+    [810, 35.80, 139.95, 717, 0, 3, '', new Date()]]),
+  '調査(分割マス)': atMaxTier
+}, null, null);
+check('上限階層で飽和したマスがあれば「割り切れた」と言わない',
+  !terminal.logs.some(function(l) { return l.indexOf('全域が20件未満に割れました') !== -1; }),
+  terminal.logs.filter(function(l) { return l.indexOf('  ') === 0; }).join(' / '));
+check('上限階層で飽和したマス数とその意味を報告する',
+  terminal.logs.some(function(l) { return l.indexOf('で飽和したままのマスが 1 あります') !== -1; }) &&
+  terminal.logs.some(function(l) { return l.indexOf('タイプ分割') !== -1; }),
+  terminal.logs.filter(function(l) { return l.indexOf('ただし階層') !== -1; })[0] || '(報告なし)');
+
 check('分割済みの飽和マスを「まだ掘れる」と誤報告しない',
   settled.logs.some(function(l) { return l.indexOf('飽和は残っていません') !== -1; }),
   settled.logs.filter(function(l) { return l.indexOf('  未分割の飽和マス') === 0 || l.indexOf('  飽和は残って') === 0; })[0] || '(報告なし)');

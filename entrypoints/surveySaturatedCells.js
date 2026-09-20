@@ -347,10 +347,23 @@ function reportSubdivisionDepth(subSheet, pendingCount) {
     return n !== '' && n !== null && n >= 1 && n < 20;
   }).length;
   Logger.log('  収穫対象(1〜19件)の分割マス: ' + harvestable + 'マス');
+  // 上限階層で飽和したまま打ち切ったマス。これ以上分割できないので「割り切れた」とは言えない。
+  const terminal = values.filter(function(row) {
+    const n = row[countIdx];
+    return row[tierIdx] >= SURVEY_MAX_TIER && n !== '' && n !== null && n >= 20;
+  }).length;
+
   if (pendingCount > 0) {
     Logger.log('  未分割の飽和マス: ' + pendingCount + ' → もう一度実行すると ' +
       (pendingCount * CHILD_CELLS_PER_PARENT) + 'コールで1段掘ります。');
-  } else {
-    Logger.log('  飽和は残っていません。全域が20件未満に割れました。');
+    return;
   }
+  if (terminal > 0) {
+    Logger.log('  これ以上分割できるマスはありません。');
+    Logger.log('  ただし階層' + SURVEY_MAX_TIER + '(上限)で飽和したままのマスが ' + terminal + ' あります。');
+    Logger.log('  1辺が十数mでも20件以上 = 1棟のビルに集中しているケースで、空間分割では解けません。');
+    Logger.log('  このマスだけはタイプ分割(restaurant を具体的な種類に割る)で取る必要があります。');
+    return;
+  }
+  Logger.log('  飽和は残っていません。全域が20件未満に割れました。');
 }
