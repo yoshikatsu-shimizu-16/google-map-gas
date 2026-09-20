@@ -222,9 +222,15 @@ function main() {
   console.log('\nセル別の一覧を書き出しました: ' + outFile);
 }
 
-try {
-  main();
-} catch (err) {
-  console.error('\n失敗しました: ' + err.message);
-  process.exit(1);
+// 直接実行されたときだけ走らせる。buildCells / loadGridDefinition は
+// tools/generateEmptyCellPrediction.js からも使うため、require されても何もしない。
+if (require.main === module) {
+  try {
+    main();
+  } catch (err) {
+    console.error('\n失敗しました: ' + err.message);
+    process.exit(1);
+  }
 }
+
+module.exports = { loadGridDefinition, buildCells };

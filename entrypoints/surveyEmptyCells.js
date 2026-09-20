@@ -2,10 +2,14 @@
  * [エントリーポイント/調査用]
  * OpenStreetMap が「飲食店0件」と見ているセルを、Pro段のフィールド指定で1コールずつ実地確認する。
  *
- * ねらい: 2026-09-20 時点の OSM では 374マス中 180マス(48%)に飲食系POIが1件も無い。
- * ここを恒久的に探索対象から外せれば、その分のコールがまるごと不要になる。ただし OSM の
- * 網羅性は Google に劣るため、OSM が0件でも Google では店が返る可能性がある。捨てる前に
+ * ねらい: OSM では 374マス中 154マスの検索円に飲食系POIが1件も無い。ここを恒久的に
+ * 探索対象から外せれば、その分のコールがまるごと不要になる。ただし OSM の網羅性は
+ * Google に劣るため、OSM が0件でも Google では店が返る可能性がある。捨てる前に
  * 必ずここで裏を取る。
+ *
+ * 対象セルの一覧は lib/survey/EmptyCellPrediction.js(自動生成)から読む。OSM の取得は
+ * ローカルで済ませてある。Apps Script の UrlFetchApp からは overpass-api.de へ到達できず
+ * ("Address unavailable")、この関数は実行時にネットワークへ出ない。
  *
  * コスト: Pro段(PLACE_SURVEY_FIELD_MASK)なので **Enterprise枠(営業用の1,000/月)を消費しない**。
  * 1セルにつき必ず1コールで、タイプ分割も四分木分割もしない(空かどうかを見るだけなので不要)。
@@ -52,33 +56,39 @@ function surveyEmptyCells() {
 
   Logger.log('===== 0件予測セルの実地確認(Pro段・営業用の枠は使いません) =====');
 
-  // --- 1. OSM から飲食系POIを取得(Googleのクォータは消費しない) ---
-  const osm = fetchOsmFoodPois(TARGET_AREA_BOUNDS);
-  if (!osm.ok) {
-    Logger.log('OpenStreetMap の取得に失敗しました: ' + osm.errorText);
+  // --- 1. 予測一覧が現在のグリッド定義と整合するか確かめる ---
+  // グリッドIDは対象範囲とセルサイズから採番される。どちらかを変えたあとに
+  // 予測を再生成していないと、まったく別のセルを飛ばすことになる。
+  if (!isEmptyCellPredictionCurrent()) {
+    Logger.log(
+      '予測一覧(lib/survey/EmptyCellPrediction.js)が現在のグリッド定義と一致しません。' +
+      'node tools/generateEmptyCellPrediction.js で再生成し、clasp push してください。'
+    );
+    Logger.log('  予測の生成時: ' + JSON.stringify(EMPTY_CELL_PREDICTION_BOUNDS) + ' / ' + EMPTY_CELL_PREDICTION_STEP + '度');
+    Logger.log('  現在の設定  : ' + JSON.stringify(TARGET_AREA_BOUNDS) + ' / ' + GRID_STEP + '度');
     return;
   }
-  Logger.log('OSM 飲食系POI: ' + osm.pois.length + '件');
+  Logger.log('OSMが0件と見たセル: ' + OSM_EMPTY_GRID_IDS.length + '件(予測一覧より)');
 
   // --- 2. 調査ログシートを用意し、調査済みのグリッドIDを読む ---
   const logSheet = ensureSurveyLogSheet(spreadsheet);
   const surveyedGridIds = readSurveyedGridIds(logSheet);
 
-  // --- 3. 対象セルを選ぶ: 円の中に OSM のPOIが1件も無いセル ---
+  // --- 3. 対象セルを選ぶ: 予測一覧にあり、まだ探索も調査もしていないセル ---
+  const predictedEmpty = {};
+  OSM_EMPTY_GRID_IDS.forEach(function(id) { predictedEmpty[id] = true; });
+
   const gridValues = gridSheet.getRange(2, 1, gridLastRow - 1, GRID_SHEET_COLUMN_COUNT).getValues();
   const targets = [];
   let skippedDone = 0;
   gridValues.forEach(function(row) {
     const gridId = row[0];
-    if (surveyedGridIds.has(gridId)) return; // 調査済み
+    if (!predictedEmpty[gridId]) return;      // OSM が店を知っている = 確認するまでもない
+    if (surveyedGridIds.has(gridId)) return;  // 調査済み
     // 探索が終わったセルは結果が分かっているので調べる必要がない。
     // この調査の目的は「これから探索するセルを飛ばしてよいか」の判断材料を作ること。
     if (GRID_DONE_STATUSES.indexOf(row[GRID_COL_STATUS - 1]) !== -1) { skippedDone++; return; }
-    const lat = row[1], lng = row[2], radius = row[3];
-    // 実際の検索は矩形を覆う円で行い、円は隣のセルにはみ出す。矩形ではなく円で数える。
-    const osmCount = countPoisWithinRadius(osm.pois, lat, lng, radius);
-    if (osmCount > 0) return; // OSM が店を知っている = 空ではないので確認するまでもない
-    targets.push({ gridId: gridId, lat: lat, lng: lng, radius: radius });
+    targets.push({ gridId: gridId, lat: row[1], lng: row[2], radius: row[3] });
   });
 
   Logger.log('探索済みのため対象外: ' + skippedDone + 'セル(結果が分かっているので調べる必要がない)');
@@ -153,6 +163,20 @@ function surveyEmptyCells() {
   if (notEmpty > 0) {
     Logger.log('「空でない」が出ています。OSMの0件だけを根拠にセルを除外するのは危険です。');
   }
+}
+
+/**
+ * 予測一覧が、現在の対象範囲・セルサイズから採番されたグリッドIDと対応しているかを確かめる。
+ * 食い違ったまま使うと、意図とまったく違うセルを飛ばすことになる。
+ *
+ * @returns {boolean}
+ */
+function isEmptyCellPredictionCurrent() {
+  return EMPTY_CELL_PREDICTION_STEP === GRID_STEP &&
+    EMPTY_CELL_PREDICTION_BOUNDS.latMin === TARGET_AREA_BOUNDS.latMin &&
+    EMPTY_CELL_PREDICTION_BOUNDS.latMax === TARGET_AREA_BOUNDS.latMax &&
+    EMPTY_CELL_PREDICTION_BOUNDS.lngMin === TARGET_AREA_BOUNDS.lngMin &&
+    EMPTY_CELL_PREDICTION_BOUNDS.lngMax === TARGET_AREA_BOUNDS.lngMax;
 }
 
 /**

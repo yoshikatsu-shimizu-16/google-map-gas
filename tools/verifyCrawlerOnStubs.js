@@ -81,7 +81,9 @@ const api = new Function(source + `
     surveyEmptyCells: surveyEmptyCells,
     checkMonthlyApiUsage: checkMonthlyApiUsage,
     SURVEY_LOG_HEADERS: SURVEY_LOG_HEADERS,
-    PLACE_TYPE_PROBE_SET: PLACE_TYPE_PROBE_SET
+    PLACE_TYPE_PROBE_SET: PLACE_TYPE_PROBE_SET,
+    OSM_EMPTY_GRID_IDS: OSM_EMPTY_GRID_IDS,
+    TARGET_AREA_BOUNDS: TARGET_AREA_BOUNDS
   };
 `)();
 
@@ -638,26 +640,32 @@ console.log('\n[10] 0件予測セルの実地確認(surveyEmptyCells)');
 // OSM が0件と見ているセルだけを Pro枠1コールずつで確認する。OSM の網羅性は
 // Google に劣るので、0件のセルを捨てる前にここで裏を取る。
 
-// セル3つ。OSM の店(35.800,139.950)は1つ目の円の中にあり、残り2つからは遠い。
+// 予測一覧(lib/survey/EmptyCellPrediction.js、自動生成)にあるIDを使う。
+// 1 は一覧に無い = OSM が店を知っているセル。15 と 16 は一覧にある。
+const PREDICTED_EMPTY_A = api.OSM_EMPTY_GRID_IDS[0];
+const PREDICTED_EMPTY_B = api.OSM_EMPTY_GRID_IDS[1];
+const NOT_PREDICTED_EMPTY = 1;
+check('前提: 予測一覧に 1 は含まれず、先頭2件は含まれる',
+  api.OSM_EMPTY_GRID_IDS.indexOf(NOT_PREDICTED_EMPTY) === -1 && api.OSM_EMPTY_GRID_IDS.length >= 2,
+  '先頭: ' + PREDICTED_EMPTY_A + ', ' + PREDICTED_EMPTY_B);
+
+// 緯度で応答を切り替えられるよう、セルごとに別の座標を与える
 const SURVEY_CELLS = [
-  [301, 35.800, 139.950, 717, '未処理', 0, '', 0.01],
-  [302, 35.900, 140.100, 717, '未処理', 0, '', 0.01],
-  [303, 35.910, 140.110, 717, '未処理', 0, '', 0.01]
+  [NOT_PREDICTED_EMPTY, 35.800, 139.950, 717, '未処理', 0, '', 0.01],
+  [PREDICTED_EMPTY_A, 35.900, 140.100, 717, '未処理', 0, '', 0.01],
+  [PREDICTED_EMPTY_B, 35.910, 140.110, 717, '未処理', 0, '', 0.01]
 ];
 
 /**
  * surveyEmptyCells を1回実行する。
  * @param {Object} sheets - 引き継ぎたいシート(2回目の実行で調査ログを引き継ぐ)
+ * @param {Object} props - 追加で設定するスクリプトプロパティ
  */
 const runSurvey = function(sheets, props) {
   const s = installGasGlobals({
-    respondToOverpass: function() {
-      return { elements: [{ type: 'node', lat: 35.800, lon: 139.950, tags: { amenity: 'restaurant', name: 'OSMが知っている店' } }] };
-    },
-    // グリッド302は本当に空、303は OSM が知らなかった店がある
+    // 予測Bのセルだけ、OSMが知らなかった店が返る
     respondToSearch: function(body) {
-      const lat = body.locationRestriction.circle.center.latitude;
-      if (lat === 35.910) {
+      if (body.locationRestriction.circle.center.latitude === 35.910) {
         return { places: [{ id: 'hidden_1', displayName: { text: '隠れた店' }, primaryType: 'ramen_restaurant', types: ['ramen_restaurant', 'restaurant'] }] };
       }
       return { places: [] };
@@ -673,24 +681,26 @@ const runSurvey = function(sheets, props) {
   return s;
 };
 
-const survey = runSurvey(null);
+const survey = runSurvey(null, null);
 const surveyLog = survey.sheets['調査ログ'];
 check('調査ログシートが作られる', !!surveyLog);
 
 const logRows = surveyLog ? surveyLog.rows() : [];
 check('ヘッダーが調査ログの定義どおり',
   logRows.length > 0 && logRows[0].join('|') === api.SURVEY_LOG_HEADERS.join('|'), logRows[0] && logRows[0].join('|'));
-check('OSMが店を知っているセル(301)は確認対象にならない',
-  logRows.slice(1).every(function(r) { return r[0] !== 301; }),
+check('予測一覧に無いセルは確認対象にならない(OSMが店を知っている)',
+  logRows.slice(1).every(function(r) { return r[0] !== NOT_PREDICTED_EMPTY; }),
   '記録されたグリッドID: ' + logRows.slice(1).map(function(r) { return r[0]; }).join(','));
-check('OSMが0件と見た2セルだけが確認される', logRows.length - 1 === 2, (logRows.length - 1) + '件');
+check('予測一覧にある2セルだけが確認される', logRows.length - 1 === 2, (logRows.length - 1) + '件');
 
 const judgementOf = function(gridId) {
   const row = logRows.slice(1).filter(function(r) { return r[0] === gridId; })[0];
   return row ? row[5] : '(記録なし)';
 };
-check('本当に空だったセルは「空(確認済み)」', judgementOf(302) === '空(確認済み)', judgementOf(302));
-check('OSMが知らない店があったセルは「空でない」', judgementOf(303) === '空でない', judgementOf(303));
+check('本当に空だったセルは「空(確認済み)」',
+  judgementOf(PREDICTED_EMPTY_A) === '空(確認済み)', judgementOf(PREDICTED_EMPTY_A));
+check('OSMが知らない店があったセルは「空でない」',
+  judgementOf(PREDICTED_EMPTY_B) === '空でない', judgementOf(PREDICTED_EMPTY_B));
 
 // 枠の分離: 調査は Pro枠だけを使う
 check('調査は Pro枠だけを消費し、営業用のEnterprise枠を使わない',
@@ -699,10 +709,9 @@ check('調査は Pro枠だけを消費し、営業用のEnterprise枠を使わ�
   'Pro=' + (survey.properties[proQuota.countProp] || 0) +
   ' / Enterprise=' + (survey.properties[entQuota.countProp] || 0));
 check('Googleへのリクエストは確認したセル数だけ(1セル1コール)',
-  survey.googleRequestCount() === 2, survey.googleRequestCount() + '回');
-check('OSMの取得はGoogleのコールに数えない',
-  survey.requestCount() === 3 && survey.googleRequestCount() === 2,
-  '総リクエスト=' + survey.requestCount() + ' / Google=' + survey.googleRequestCount());
+  survey.requestCount() === 2, survey.requestCount() + '回');
+check('実行時にネットワークへ出るのはGoogleだけ(OSMは事前生成なので叩かない)',
+  survey.requestCount() === 2, survey.requestCount() + '回');
 
 // 本番のシートを汚さないこと
 check('「全飲食店データ」を作らない(営業用データには触らない)',
@@ -712,17 +721,22 @@ check('「グリッド一覧」の処理状況を書き換えない',
   survey.sheets['グリッド一覧'].rows().slice(1).map(function(r) { return r[4]; }).join(','));
 
 // 再実行しても同じセルを二度叩かない(再開可能・冪等)
-const second = runSurvey(survey.sheets);
-check('再実行しても確認済みのセルは叩き直さない', second.googleRequestCount() === 0,
-  second.googleRequestCount() + '回');
+const second = runSurvey(survey.sheets, null);
+check('再実行しても確認済みのセルは叩き直さない', second.requestCount() === 0,
+  second.requestCount() + '回');
 check('再実行で調査ログが増えない', second.sheets['調査ログ'].rows().length === logRows.length,
   second.sheets['調査ログ'].rows().length + '行');
+
+// 予測一覧が現在のグリッド定義と食い違っていたら止まること
+check('予測一覧は現在の対象範囲・セルサイズと一致している(生成し直し忘れの検知)',
+  !survey.logs.some(function(l) { return l.indexOf('現在のグリッド定義と一致しません') !== -1; }),
+  survey.logs.filter(function(l) { return l.indexOf('予測一覧') === 0; })[0] || '一致');
 
 // --- 試算モード: 叩く前に消費コール数だけ知る ---
 // 請求先を紐付けた本番キーに切り替えた直後など、消費量を確定させてから実行したい場合に使う。
 const dryRun = runSurvey(null, { SURVEY_MAX_CALLS: '0' });
 check('SURVEY_MAX_CALLS=0 ならGoogleへのリクエストが1件も発生しない',
-  dryRun.googleRequestCount() === 0, dryRun.googleRequestCount() + '回');
+  dryRun.requestCount() === 0, dryRun.requestCount() + '回');
 check('試算モードは「実行したら何コール要るか」を報告する',
   dryRun.logs.some(function(l) { return l.indexOf('実行すれば 2 コール消費します') !== -1; }),
   dryRun.logs.filter(function(l) { return l.indexOf('確認対象:') === 0; })[0] || '(報告なし)');
@@ -735,20 +749,21 @@ check('試算モードではPro枠も消費しない',
 // --- 上限を決めて少しずつ実行する ---
 const capped = runSurvey(null, { SURVEY_MAX_CALLS: '1' });
 check('SURVEY_MAX_CALLS で1回の実行を指定件数に抑えられる',
-  capped.googleRequestCount() === 1, capped.googleRequestCount() + '回');
+  capped.requestCount() === 1, capped.requestCount() + '回');
 check('上限で止まった旨をログに出す',
   capped.logs.some(function(l) { return l.indexOf('SURVEY_MAX_CALLS') !== -1 && l.indexOf('達したため中断') !== -1; }));
 
 // --- 探索済みのセルは調査しない ---
+// どちらも予測一覧にあるセル。片方だけ探索済みにして、対象から外れることを見る。
 const doneCells = [
-  [401, 35.900, 140.100, 717, '処理済み', 0, '', 0.01],
-  [402, 35.910, 140.110, 717, '未処理', 0, '', 0.01]
+  [PREDICTED_EMPTY_A, 35.900, 140.100, 717, '処理済み', 0, '', 0.01],
+  [PREDICTED_EMPTY_B, 35.910, 140.110, 717, '未処理', 0, '', 0.01]
 ];
 const withDone = runSurvey({
   'グリッド一覧': createFakeSheet([api.GRID_SHEET_HEADERS].concat(doneCells.map(function(r) { return r.slice(); })))
 }, null);
 check('探索済みのセルは調査対象から外れる(結果が分かっているため)',
-  withDone.googleRequestCount() === 1, withDone.googleRequestCount() + '回');
+  withDone.requestCount() === 1, withDone.requestCount() + '回');
 check('対象外にした件数を報告する',
   withDone.logs.some(function(l) { return l.indexOf('探索済みのため対象外: 1セル') !== -1; }),
   withDone.logs.filter(function(l) { return l.indexOf('探索済みのため対象外') === 0; })[0] || '(報告なし)');

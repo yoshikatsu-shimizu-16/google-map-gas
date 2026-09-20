@@ -152,6 +152,13 @@
  * entrypoints/surveyEmptyCells.js が Pro枠で1セル1コールずつ裏を取る
  * (154コールはPro枠5,000の3%で、営業用の枠は一切消費しない)。
  *
+ * OSMの取得はローカルで行い、結果だけを lib/survey/EmptyCellPrediction.js という
+ * ソースにして clasp push で持ち込む。当初は GAS から直接 Overpass を叩いていたが、
+ * UrlFetchApp からは到達できなかった("Address unavailable"。共用サーバーが
+ * データセンターからのアクセスを弾いていると思われる)。結果として GAS は実行時に
+ * Google 以外のネットワークへ出ない構成になり、外部サービスの停止や仕様変更で
+ * クロールが止まるリスクも消えた。
+ *
  * ===== 出力シートのフィルタを毎回作り直さない(2026-09-20 追加) =====
  * 「全飲食店データ」シートのフィルタは、範囲が意図とずれたときだけ張り直す
  * (lib/crawler/PlaceDataSheetFilter.js)。以前は crawlAllGrids の末尾で毎回
