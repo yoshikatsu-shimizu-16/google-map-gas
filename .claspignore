@@ -17,12 +17,12 @@
 !lib/crawler/PlaceRowWriter.js
 !lib/crawler/PlaceDataSheetFilter.js
 !lib/crawler/PlaceDataSchemaMigration.js
-!lib/catalog/PlaceTypeProbeSet.js
+!lib/catalog/PlaceTypeSearchSet.js
 !lib/catalog/PlaceTypeCoverageAnalysis.js
-!entrypoints/auditProbeSetCoverage.js
-!entrypoints/compareProbeSetWithTypeGroups.js
+!entrypoints/auditPlaceTypeSetCoverage.js
+!entrypoints/comparePlaceTypeSetWithTypeGroups.js
 !lib/crawler/TypeGroupCellSearch.js
-!lib/crawler/ProbeFirstCellSearch.js
+!lib/crawler/PlaceTypeSetCellSearch.js
 !lib/survey/EmptyCellPrediction.js
 !lib/survey/SurveyCallBudget.js
 !entrypoints/surveyEmptyCells.js

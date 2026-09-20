@@ -140,7 +140,7 @@ function surveyEmptyCells() {
     }
     const cell = targets[i];
     const result = callSearchNearby(
-      apiKey, PLACE_SURVEY_FIELD_MASK, PLACE_TYPE_PROBE_SET, cell.lat, cell.lng, cell.radius);
+      apiKey, PLACE_SURVEY_FIELD_MASK, PLACE_TYPE_SEARCH_SET, cell.lat, cell.lng, cell.radius);
 
     if (!result.ok) {
       if (result.quotaExceeded) {

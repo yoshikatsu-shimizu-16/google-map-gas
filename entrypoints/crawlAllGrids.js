@@ -4,16 +4,16 @@
  * Places API (New) の searchNearby エンドポイントで店舗を検索して
  * 「全飲食店データ」シートに書き込む。
  *
- * 検索方式: プローブ集合(PLACE_TYPE_PROBE_SET、傘型36種)で1セルにつき1回だけ
- * 検索する(lib/crawler/ProbeFirstCellSearch.js)。`includedTypes` は `types` 配列
+ * 検索方式: プレイスタイプ集合(PLACE_TYPE_SEARCH_SET、傘型36種)で1セルにつき1回だけ
+ * 検索する(lib/crawler/PlaceTypeSetCellSearch.js)。`includedTypes` は `types` 配列
  * 全体にマッチするため、166種の個別指定や頻度別グループ分けをしなくても通常は
  * 1コールで足りる(docs/survey-findings-2026-09.md で実測済み)。
  *
  * 密集エリア対策(20件の壁への対応):
- *   1. プローブがちょうど20件(maxResultCount)返ってきた場合、切り捨ての疑いが
+ *   1. 検索がちょうど20件(maxResultCount)返ってきた場合、切り捨ての疑いが
  *      あるため、階層が MAX_TIER 未満の場合に限り、セル矩形を4象限に等分した
  *      子グリッドを生成して「グリッド一覧」に追加する(次回実行時に自動的に
- *      処理される)。飽和マス1つあたり、この空間分割は4コール(プローブ1+
+ *      処理される)。飽和マス1つあたり、この空間分割は4コール(1コール+
  *      子4つ)で済み、旧来のタイプ分割(A/B/C/D+再分割で最大11コール)より安い
  *      (docs/survey-findings-2026-09.md 2-5節)。
  *   2. 階層が MAX_TIER に達してもまだ20件出る場合は、これ以上の自動化は
@@ -37,7 +37,7 @@
  *     (checkAndIncrementApiQuota)を検知した場合は、個別グリッドのエラーとして無視せず、
  *     ループ全体を即座に中断する。このとき「処理状況」は更新されないため、
  *     翌日・翌月以降の再実行でそのグリッドから再開される。
- *   - プローブの内訳(コール数・0件セル数・確定セル数・20件飽和セル数・階層別の消費・
+ *   - 検索内訳(コール数・0件セル数・確定セル数・20件飽和セル数・階層別の消費・
  *     被覆漏れ数)をログに出す。格子方式の変更を判断するための計測値。
  *
  * @returns {void}
@@ -100,9 +100,9 @@ function crawlAllGrids() {
     const stats = {
       totalCalls: 0,
       callsByTier: {},                   // 階層別のコール数
-      probeEmpty: 0,                     // プローブが0件だったセル数
-      probeResolved: 0,                  // プローブ1コールで確定したセル数(0件を含む)
-      probeSaturated: 0,                 // プローブが20件で空間分割の対象になった回数
+      placeTypeSetEmpty: 0,              // 検索が0件だったセル数
+      placeTypeSetResolved: 0,           // 1コールで確定したセル数(0件を含む)
+      placeTypeSetSaturated: 0,          // 20件で空間分割の対象になった回数
       uncoveredPlaces: 0                 // プローブ集合で被覆されなかった新規取得店舗数
     };
 
@@ -154,14 +154,14 @@ function crawlAllGrids() {
 
       const search = { apiKey: apiKey, fieldMask: PLACE_SEARCH_FIELD_MASK, writer: writer };
       const cell = { gridId: gridId, lat: lat, lng: lng, radius: radius };
-      const result = searchCellByProbeSet(search, cell);
+      const result = searchCellByPlaceTypeSet(search, cell);
 
       foldCallLog(result.callLog, tier);
       newRowsCount += result.newRows;
       stats.uncoveredPlaces += result.uncoveredPlaces.length;
-      if (result.probeResolved) stats.probeResolved++;
-      if (result.probeSaturated) stats.probeSaturated++;
-      if (result.probeEmpty) stats.probeEmpty++;
+      if (result.placeTypeSetResolved) stats.placeTypeSetResolved++;
+      if (result.placeTypeSetSaturated) stats.placeTypeSetSaturated++;
+      if (result.placeTypeSetEmpty) stats.placeTypeSetEmpty++;
 
       // 中断する場合も、それまでに集めた行は失わないよう先に書き出す
       writer.flush();
@@ -209,10 +209,10 @@ function crawlAllGrids() {
       ' / 累計件数: ' + (finalLastRow - 1)
     );
     Logger.log(
-      '[プローブ内訳] コール: ' + stats.totalCalls +
-      ' / 0件: ' + stats.probeEmpty +
-      ' / 確定: ' + stats.probeResolved +
-      ' / 20件飽和(要分割): ' + stats.probeSaturated +
+      '[検索内訳] コール: ' + stats.totalCalls +
+      ' / 0件: ' + stats.placeTypeSetEmpty +
+      ' / 確定: ' + stats.placeTypeSetResolved +
+      ' / 20件飽和(要分割): ' + stats.placeTypeSetSaturated +
       ' / 階層別: ' + JSON.stringify(stats.callsByTier) +
       ' / 未被覆の店: ' + stats.uncoveredPlaces
     );

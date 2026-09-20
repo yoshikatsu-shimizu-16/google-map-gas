@@ -10,7 +10,7 @@
     "push": "clasp push",
     "open": "clasp open",
     "logs": "clasp logs",
-    "test": "node tools/verifyGridGeometry.js && node tools/verifyGridOverlapAnalysis.js && node tools/verifyProbeSetCoverage.js && node tools/verifyCrawlerOnStubs.js",
+    "test": "node tools/verifyGridGeometry.js && node tools/verifyGridOverlapAnalysis.js && node tools/verifyPlaceTypeSetCoverage.js && node tools/verifyCrawlerOnStubs.js",
     "density": "node tools/buildDensityMap.js",
     "predict-empty": "node tools/generateEmptyCellPrediction.js"
   },

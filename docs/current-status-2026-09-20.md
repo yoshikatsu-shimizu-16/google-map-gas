@@ -33,8 +33,8 @@
 このうち本当に「毎日動いている」のは `crawlAllGrids` と `generateGridList` の
 2つだけで、残り8個のエントリーポイントは**調査・監査用**(普段は手動でしか実行しない):
 
-- `auditGridOverlap` / `auditProbeSetCoverage` — 調べるための道具(APIコール0)
-- `compareProbeSetWithTypeGroups` / `surveyAllCells` / `surveySaturatedCells` / `surveyEmptyCells` — 過去の調査で使った道具(役目は終わっている)
+- `auditGridOverlap` / `auditPlaceTypeSetCoverage` — 調べるための道具(APIコール0)
+- `comparePlaceTypeSetWithTypeGroups` / `surveyAllCells` / `surveySaturatedCells` / `surveyEmptyCells` — 過去の調査で使った道具(役目は終わっている)
 - `checkMonthlyApiUsage` / `resetRestaurantData` / `triggers` — 運用の補助
 
 **「調査で使ったが役目が終わったコード」を削って整理する、というのは正当な要望です。**

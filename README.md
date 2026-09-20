@@ -37,12 +37,12 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `lib/crawler/PlaceDataSheetFilter.js` | 内部ヘルパー | 「全飲食店データ」シートのフィルタ範囲の方針(運用者の絞り込み条件を消さない張り方) |
 | `lib/crawler/PlaceDataSchemaMigration.js` | 内部ヘルパー | 「全飲食店データ」シートの列構成を保持したまま最新スキーマへ移行 |
 | `lib/catalog/PlaceTypeCatalog.js` | データ | 検索対象 Place Type のカタログ定義(頻度別4グループ、および両者から導出した166種のカタログ `ALL_SEARCHABLE_PLACE_TYPES`)と密集時のタイプ分割 |
-| `lib/catalog/PlaceTypeProbeSet.js` | データ | includedTypes 1コールで166種の大半を被覆するためのプローブ集合と被覆判定 `isCoveredByProbeSet` |
+| `lib/catalog/PlaceTypeSearchSet.js` | データ | includedTypes 1コールで166種の大半を被覆するためのプレイスタイプ集合と被覆判定 `isCoveredByPlaceTypeSet` |
 | `lib/catalog/PlaceTypeCoverageAnalysis.js` | 内部ヘルパー | プローブ集合の被覆率集計・貪欲法による最小被覆集合の算出(Sheet/Logger/APIに依存しない純関数) |
-| `lib/crawler/ProbeFirstCellSearch.js` | 内部ヘルパー | 1セルをプローブ集合(傘型36種)1コールで探索する手順。`crawlAllGrids` の唯一の探索経路 |
+| `lib/crawler/PlaceTypeSetCellSearch.js` | 内部ヘルパー | 1セルをプレイスタイプ集合(傘型36種)1コールで探索する手順。`crawlAllGrids` の唯一の探索経路 |
 | `lib/crawler/TypeGroupCellSearch.js` | 内部ヘルパー | 1セルを頻度別グループ(A/B/C/D)で探索する手順。通常経路からは呼ばれないが、空間分割でも解決しない飽和マス向けに残している |
-| `entrypoints/auditProbeSetCoverage.js` | エントリーポイント | 「全飲食店データ」の実測値からプローブ集合の被覆率を判定(APIコール0) |
-| `entrypoints/compareProbeSetWithTypeGroups.js` | エントリーポイント | 複数セルで傘型プローブ1コールと4グループの Place ID 差分を検証(**Pro段。営業用の枠を使わない**) |
+| `entrypoints/auditPlaceTypeSetCoverage.js` | エントリーポイント | 「全飲食店データ」の実測値からプレイスタイプ集合の被覆率を判定(APIコール0) |
+| `entrypoints/comparePlaceTypeSetWithTypeGroups.js` | エントリーポイント | 複数セルでプレイスタイプ集合1コールと4グループの Place ID 差分を検証(**Pro段。営業用の枠を使わない**) |
 | `lib/survey/SurveyCallBudget.js` | 内部ヘルパー | 調査系が1回の実行で使ってよいコール数(`SURVEY_MAX_CALLS`)の読み取り |
 | `entrypoints/surveySaturatedCells.js` | エントリーポイント | 飽和マスを4分割して密度を測る。実行のたびに1段ずつ深く掘り、全域が20件未満に割れるまで繰り返す |
 | `entrypoints/surveyAllCells.js` | エントリーポイント | 全マスに1コールずつ投げ、密度とタイプの実態を Pro枠で洗い出す |
@@ -130,10 +130,14 @@ npm run push
 - `GOOGLE_MAPS_API_KEY` — Google Maps Platform の APIキー
 - `TARGET_SPREADSHEET_ID` — 書き込み先スプレッドシートID(未設定の場合、`generateGridList`
   実行時に新規スプレッドシートが自動作成されます)
-`crawlAllGrids` の探索方式はプローブ集合(`PLACE_TYPE_PROBE_SET`、傘型36種)1コールに
+「プレイスタイプ」は Google Places API (New) の公式用語で、場所の種類を表す分類のこと
+(例: `restaurant`, `cafe`。一覧は
+[Table A](https://developers.google.com/maps/documentation/places/web-service/place-types?hl=ja#table-a))。
+
+`crawlAllGrids` の探索方式はプレイスタイプ集合(`PLACE_TYPE_SEARCH_SET`、傘型36種)1コールに
 一本化しており、切り替え用のスクリプトプロパティはありません(詳細は `docs/Overview.js` を参照)。
 
-  > **`auditProbeSetCoverage` の前提**: この監査は「全飲食店データ」の**「全タイプ」列だけ**を
+  > **`auditPlaceTypeSetCoverage` の前提**: この監査は「全飲食店データ」の**「全タイプ」列だけ**を
   > 母集団として読みます。`places.types` はフィールドマスクに後から追加した項目なので、
   > **それ以前に取得した行では「全タイプ」が空**で、判定対象になりません。シートが旧スキーマの
   > ままの場合や、全行の「全タイプ」が空の場合は、被覆率を出さずに理由を添えて中断します
@@ -160,7 +164,7 @@ Enterprise が `MONTHLY_API_CALL_COUNT`(運用中のカウントを引き継ぐ�
   **`0` にすると「実行したら何コール必要か」を報告するだけで、Googleへのリクエストは
   1件も発生しません**(請求先を紐付けたキーに切り替えた直後など、消費量を確定させて
   から実行したいときに使う)。未設定なら上限なし
-- `PROBE_SURVEY_SAMPLE_SIZE`(任意) — `compareProbeSetWithTypeGroups` が1回の実行で検証する
+- `PROBE_SURVEY_SAMPLE_SIZE`(任意、キー名は変更していません) — `comparePlaceTypeSetWithTypeGroups` が1回の実行で検証する
   セル数。未設定なら20。消費は1セルあたり、飽和なら1コール・判定できれば5コール(すべてPro段)
 
 ## エントリーポイント一覧
@@ -181,8 +185,8 @@ GASの「実行」メニューやトリガー設定画面に並ぶ関数のう�
 | `surveySaturatedCells` | `entrypoints/surveySaturatedCells.js` | 調査用 | 飽和マス(20件以上)を4分割し「調査(分割マス)」に記録。**実行のたびに1段ずつ深く掘る** | **Pro段のため営業用の枠を消費しない**。親1つにつき4コール。**「グリッド一覧」に子グリッドを追加しない**。先に `surveyAllCells` が必要 |
 | `surveyAllCells` | `entrypoints/surveyAllCells.js` | 調査用 | 全マスに1コールずつ投げ、密度とタイプの実態を「調査(マス)」「調査(店)」に記録 | **Pro段のため営業用の枠を消費しない**。1マス1コール固定。本番シートに書き込まない。`SURVEY_MAX_CALLS=0` で試算のみ |
 | `surveyEmptyCells` | `entrypoints/surveyEmptyCells.js` | 調査用 | OSMが0件と見た**未処理**セルを1コールずつ実地確認し「調査ログ」に記録 | **Pro段のため営業用の枠(1,000/月)を消費しない**。消費コール数=対象セル数。`SURVEY_MAX_CALLS=0` で試算のみ。本番シートに書き込まない |
-| `auditProbeSetCoverage` | `entrypoints/auditProbeSetCoverage.js` | 確認用 | 実測データからプローブ集合の被覆率・最小被覆集合をログ出力 | 副作用なし。**APIコール0**。旧方式(4グループ)で取得した行が必要(下記の前提を参照)。通常経路を一本化した現在は新規取得行に対して使えない(自己循環) |
-| `compareProbeSetWithTypeGroups` | `entrypoints/compareProbeSetWithTypeGroups.js` | 調査用 | 複数セルで傘型プローブ1コールと4グループ(A/B/C/D)の差分を検証し「調査ログ(傘型)」に記録 | **Pro段のため営業用の枠を消費しない**。1セル5コール(飽和なら1)。**「全飲食店データ」に書き込まない**(Pro段は評価もHPも無いため) |
+| `auditPlaceTypeSetCoverage` | `entrypoints/auditPlaceTypeSetCoverage.js` | 確認用 | 実測データからプレイスタイプ集合の被覆率・最小被覆集合をログ出力 | 副作用なし。**APIコール0**。旧方式(4グループ)で取得した行が必要(下記の前提を参照)。通常経路を一本化した現在は新規取得行に対して使えない(自己循環) |
+| `comparePlaceTypeSetWithTypeGroups` | `entrypoints/comparePlaceTypeSetWithTypeGroups.js` | 調査用 | 複数セルでプレイスタイプ集合1コールと4グループ(A/B/C/D)の差分を検証し「調査ログ(傘型)」に記録 | **Pro段のため営業用の枠を消費しない**。1セル5コール(飽和なら1)。**「全飲食店データ」に書き込まない**(Pro段は評価もHPも無いため) |
 | `auditGridOverlap` | `entrypoints/auditGridOverlap.js` | 確認用 | 「グリッド一覧」の階層0セルの半径不一致・検索円の重複をログ出力 | 副作用なし。**APIコール0**。旧 `generateGridList` が半径700mを決め打ちしていた行(現行は約717m)や、旧ロジックの兄弟円どうしの重複を検出する |
 | `fixUnprocessedRootRadius` | `entrypoints/auditGridOverlap.js` | 手動実行 | 階層0セルのうち「未処理」の行だけ、半径を現行コードの計算値に修正 | **APIコール0**。処理済みの行には触らない(過去のコールをやり直すと無駄になるため) |
 
@@ -207,7 +211,7 @@ GAS には型チェックもコンパイルもなく、識別子の取り違え�
 ```bash
 npm test
 # = node tools/verifyGridGeometry.js && node tools/verifyGridOverlapAnalysis.js &&
-#   node tools/verifyProbeSetCoverage.js && node tools/verifyCrawlerOnStubs.js
+#   node tools/verifyPlaceTypeSetCoverage.js && node tools/verifyCrawlerOnStubs.js
 ```
 
 ```bash
@@ -229,13 +233,13 @@ node tools/verifyGridOverlapAnalysis.js
 十数m規模でズレることも確認します(`auditGridOverlap` の判定根拠、Issue #24)。
 
 ```bash
-node tools/verifyProbeSetCoverage.js
+node tools/verifyPlaceTypeSetCoverage.js
 ```
 
-`PLACE_TYPE_PROBE_SET` / `isCoveredByProbeSet` / `parsePlaceTypesCell` /
-`summarizeProbeCoverage` / `findMinimalProbeCover`(Sheet/Logger/APIに依存しない純関数)を
+`PLACE_TYPE_SEARCH_SET` / `isCoveredByPlaceTypeSet` / `parsePlaceTypesCell` /
+`summarizePlaceTypeSetCoverage` / `findMinimalPlaceTypeCover`(Sheet/Logger/APIに依存しない純関数)を
 検証します。貪欲法の最小被覆集合は決定的である(再実行しても選択順が揺れない)ことも
-確認します。`auditProbeSetCoverage` 自体もフェイクシート上で1回通し、「全タイプ」が空の行が
+確認します。`auditPlaceTypeSetCoverage` 自体もフェイクシート上で1回通し、「全タイプ」が空の行が
 未被覆ではなく判定対象外として扱われることを確認します。
 
 ```bash
