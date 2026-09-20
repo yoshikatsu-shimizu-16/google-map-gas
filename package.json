@@ -9,7 +9,8 @@
     "pull": "clasp pull",
     "push": "clasp push",
     "open": "clasp open",
-    "logs": "clasp logs"
+    "logs": "clasp logs",
+    "test": "node tools/verifyGridGeometry.js && node tools/verifyProbeSetCoverage.js && node tools/verifyCrawlerOnStubs.js"
   },
   "devDependencies": {
     "@google/clasp": "^3.4.1"

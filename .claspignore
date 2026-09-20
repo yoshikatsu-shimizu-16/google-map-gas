@@ -16,4 +16,11 @@
 !lib/crawler/PlaceRowWriter.js
 !lib/crawler/PlaceDataSheetFilter.js
 !lib/crawler/PlaceDataSchemaMigration.js
+!lib/catalog/PlaceTypeProbeSet.js
+!lib/catalog/PlaceTypeCoverageAnalysis.js
+!entrypoints/auditProbeSetCoverage.js
+!entrypoints/compareProbeSetWithTypeGroups.js
+!lib/crawler/SearchStrategyMode.js
+!lib/crawler/TypeGroupCellSearch.js
+!lib/crawler/ProbeFirstCellSearch.js
 !appsscript.json
