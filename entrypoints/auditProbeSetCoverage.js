@@ -38,9 +38,32 @@ function auditProbeSetCoverage() {
     return;
   }
 
-  // 列番号はハードコードせず PLACE_DATA_HEADERS.indexOf から導出する(列構成の変更に追従するため)。
-  const nameCol = PLACE_DATA_HEADERS.indexOf('店名') + 1;
-  const typesCol = PLACE_DATA_HEADERS.indexOf('全タイプ') + 1;
+  // 列番号は PLACE_DATA_HEADERS の並びではなく、シートの実際のヘッダー行から引く。
+  // 期待するスキーマの並びをそのまま信じると、シートが旧スキーマのままのときに黙って
+  // 別の列を読んでしまう(旧20列スキーマでは3列目が「全タイプ」ではなく「住所」なので、
+  // 住所文字列をタイプ配列として解釈し、被覆率0%という無意味な結果が出る)。
+  const headerRow = dataSheet.getRange(1, 1, 1, dataSheet.getLastColumn()).getValues()[0];
+  const headerColumnOf = function(name) {
+    for (let i = 0; i < headerRow.length; i++) {
+      const value = (headerRow[i] === null || headerRow[i] === undefined) ? '' : String(headerRow[i]).trim();
+      if (value === name) return i + 1;
+    }
+    return -1;
+  };
+  const nameCol = headerColumnOf('店名');
+  const typesCol = headerColumnOf(PLACE_HEADER_ALL_TYPES);
+  if (nameCol === -1 || typesCol === -1) {
+    Logger.log(
+      '「全飲食店データ」シートに「店名」または「' + PLACE_HEADER_ALL_TYPES + '」列がありません' +
+      '(旧スキーマのままの可能性があります)。crawlAllGrids を1回実行するとスキーマ移行が走ります。'
+    );
+    Logger.log(
+      'ただし places.types はフィールドマスクに後から追加した項目のため、移行しても' +
+      '既存行の「' + PLACE_HEADER_ALL_TYPES + '」は空のままです。移行後に新しく取得した行が' +
+      '溜まってから再実行してください。'
+    );
+    return;
+  }
   const readFromCol = Math.min(nameCol, typesCol);
   const readToCol = Math.max(nameCol, typesCol);
   // 「店名」「全タイプ」を含む範囲を1回の getValues でまとめて読む(0コールかつシートアクセスも最小限)。
@@ -62,12 +85,16 @@ function auditProbeSetCoverage() {
 
   Logger.log(
     '[1. 母集団の健全性] 総行数: ' + raw.length +
-    ' / 「全タイプ」空: ' + emptyRowCount + '(PR #1の移行前に取得された行)' +
+    ' / 「全タイプ」空: ' + emptyRowCount + '(places.types をフィールドマスクに追加する前に取得された行)' +
     ' / 判定対象: ' + usableRows.length +
     ' / 異なりタイプ数: ' + Object.keys(distinctTypes).length
   );
   if (usableRows.length === 0) {
-    Logger.log('判定に使える行が0件です。データ不足のため、しばらくクロールを回してから再実行してください。');
+    Logger.log(
+      '判定に使える行が0件です(全行の「' + PLACE_HEADER_ALL_TYPES + '」が空)。' +
+      'places.types はフィールドマスクに後から追加した項目のため、それ以前に取得した行には' +
+      '入っていません。しばらくクロールを回して新しい行を溜めてから再実行してください。'
+    );
     return;
   }
 

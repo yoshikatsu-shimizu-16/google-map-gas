@@ -124,6 +124,13 @@ npm run push
   完全フォールバック)。不正な値を入れると警告ログ付きで `type_groups` にフォールバックする。
   `probe` に切り替える前に必ず `auditProbeSetCoverage` で被覆率を確認すること
   (詳細は `docs/Overview.js` のリスク表を参照)
+
+  > **`auditProbeSetCoverage` の前提**: この監査は「全飲食店データ」の**「全タイプ」列だけ**を
+  > 母集団として読みます。`places.types` はフィールドマスクに後から追加した項目なので、
+  > **それ以前に取得した行では「全タイプ」が空**で、判定対象になりません。シートが旧スキーマの
+  > ままの場合や、全行の「全タイプ」が空の場合は、被覆率を出さずに理由を添えて中断します
+  > (住所列を誤って読んで「被覆率0%」を出さないため)。判定には、フィールドマスク更新後に
+  > 新しく取得した行が必要です。
 - `PROBE_COMPARISON_GRID_ID`(任意) — `compareProbeSetWithTypeGroups` の対象グリッドID。
   未設定なら0コールで案内ログのみを出して終了する(実行メニューからの誤爆防止)
 
@@ -142,7 +149,7 @@ GASの「実行」メニューやトリガー設定画面に並ぶ関数のう�
 | `listTriggers` | `entrypoints/triggers.js` | 確認用 | 現在設定されているトリガー一覧をログ出力 | 副作用なし |
 | `checkMonthlyApiUsage` | `entrypoints/checkMonthlyApiUsage.js` | 確認用 | 今月のAPIコール数と現在の検索方式をログ出力 | 副作用なし |
 | `resetRestaurantData` | `entrypoints/resetRestaurantData.js` | 手動実行(初回・データ再取得時のみ) | 「全飲食店データ」シートのデータ行を全削除 | データ消去を伴うため実行前に要確認 |
-| `auditProbeSetCoverage` | `entrypoints/auditProbeSetCoverage.js` | 確認用 | 実測データからプローブ集合の被覆率・最小被覆集合をログ出力 | 副作用なし。**APIコール0**。`SEARCH_STRATEGY=probe` へ切り替える前に実行すること |
+| `auditProbeSetCoverage` | `entrypoints/auditProbeSetCoverage.js` | 確認用 | 実測データからプローブ集合の被覆率・最小被覆集合をログ出力 | 副作用なし。**APIコール0**。`SEARCH_STRATEGY=probe` へ切り替える前に実行すること。**「全タイプ」列が埋まった行が必要**(下記の前提を参照) |
 | `compareProbeSetWithTypeGroups` | `entrypoints/compareProbeSetWithTypeGroups.js` | 確認用 | 指定グリッドでプローブ集合とタイプグループの Place ID 差分をログ出力 | `PROBE_COMPARISON_GRID_ID` 未設定なら0コールで案内のみ。設定時は5〜25コール |
 
 ## 実行順序(初回セットアップ)
