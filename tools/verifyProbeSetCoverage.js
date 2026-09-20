@@ -157,5 +157,52 @@ const coverageLog = stub.logs.filter(function(l) { return l.indexOf('[3. 現行�
 check('被覆率ログが判定対象2行のうち1行被覆になる(空行を分母に含めない)',
   !!coverageLog && coverageLog.indexOf('1/2') !== -1, coverageLog);
 
+// =====================================================================
+console.log('\n[7] 旧スキーマのシートを誤読しないこと');
+// =====================================================================
+// 旧20列スキーマでは3列目が「全タイプ」ではなく「住所」。期待するスキーマの並びを
+// そのまま信じて列番号を決めると、住所文字列をタイプ配列として解釈してしまい、
+// 「被覆率0%」という無意味な結果が出る(実際に本番シートで起きた)。
+const LEGACY_PLACE_HEADERS = [
+  '店名', '主タイプ', '住所',
+  '電話番号(国内)', 'HP有無', 'HP URL', 'Google Maps URL',
+  '評価', '評価件数',
+  '営業状況', '通常営業時間', '価格帯',
+  'テイクアウト', 'デリバリー', '店内飲食', '予約可',
+  '子連れ向き', 'ペット可', '説明文(Editorial)',
+  'Place ID'
+];
+const legacyStub = installGasGlobals({});
+legacyStub.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+legacyStub.sheets['全飲食店データ'] = createFakeSheet([
+  LEGACY_PLACE_HEADERS,
+  ['デニーズ 二十世紀ヶ丘店', 'ファミリーレストラン', '〒271-0085 千葉県松戸市二十世紀が丘中松町２０',
+   '047-000-0000', 'なし', '', 'https://maps.google.com/?cid=1', 3.5, 300,
+   'OPERATIONAL', '月曜日: 24時間営業', '', '', '', '', '', '', '', '', 'ChIJ_legacy']
+]);
+
+api.auditProbeSetCoverage();
+
+const legacyWarning = legacyStub.logs.filter(function(l) { return l.indexOf('列がありません') !== -1; })[0];
+check('旧スキーマでは列が無い旨を報告して中断する', !!legacyWarning, legacyWarning);
+check('被覆率を算出しない(0%という誤った結果を出さない)',
+  legacyStub.logs.every(function(l) { return l.indexOf('[3. 現行プローブ集合の被覆率]') !== 0; }),
+  legacyStub.logs.filter(function(l) { return l.indexOf('[3.') === 0; }).join(' / ') || 'なし');
+check('places.types が後から追加された項目である旨を案内する',
+  legacyStub.logs.some(function(l) { return l.indexOf('places.types') !== -1; }));
+
+// --- 最新スキーマだが「全タイプ」が全行空のケース(移行直後の実態) ---
+const emptyTypesStub = installGasGlobals({});
+emptyTypesStub.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+const emptyTypesSheet = createFakeSheet([api.PLACE_DATA_HEADERS]);
+emptyTypesSheet.appendRow(buildRow('移行直後の店', ''));
+emptyTypesStub.sheets['全飲食店データ'] = emptyTypesSheet;
+
+api.auditProbeSetCoverage();
+
+check('全行の「全タイプ」が空なら、理由を添えて中断する',
+  emptyTypesStub.logs.some(function(l) { return l.indexOf('判定に使える行が0件です') === 0 && l.indexOf('places.types') !== -1; }),
+  emptyTypesStub.logs.filter(function(l) { return l.indexOf('判定に使える行が0件です') === 0; })[0]);
+
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);
