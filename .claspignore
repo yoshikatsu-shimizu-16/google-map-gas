@@ -30,4 +30,5 @@
 !entrypoints/surveyAllCells.js
 !entrypoints/surveySaturatedCells.js
 !entrypoints/auditGridOverlap.js
+!lib/survey/SurveyFindingsHarvest.js
 !appsscript.json
