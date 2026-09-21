@@ -49,6 +49,10 @@
  *     翌日・翌月以降の再実行でそのグリッドから再開される。
  *   - 検索内訳(コール数・0件セル数・確定セル数・20件飽和セル数・階層別の消費・
  *     被覆漏れ数)をログに出す。格子方式の変更を判断するための計測値。
+ *   - 「調査(マス)」(surveyAllCells が Pro段で調べた既知の結果)があれば、未処理行に
+ *     適用して答えが分かっているコールを省く(lib/survey/SurveyFindingsHarvest.js)。
+ *     0件だったマスはコールせず完了扱いにし、飽和だったマスは親のコールを省いて
+ *     いきなり子を生成する。座標が一致しない行(生成条件が変わった疑い)には適用しない。
  *
  * @returns {void}
  */
@@ -108,6 +112,28 @@ function crawlAllGrids() {
     let errorExhaustedCount = 0; // 再試行の上限に達し、自動での再試行を打ち切ったグリッド数
     let nextGridId = gridValues.reduce(function(max, r) { return Math.max(max, r[0]); }, 0) + 1;
     let quotaExceeded = false;
+
+    // --- 調査結果を適用し、答えが分かっているコールを省く(Issue #39) ---
+    // gridValues は参照渡しなので、書き換えた行のステータスはこの場でも更新される。
+    const surveyCellSheet = spreadsheet.getSheetByName('調査(マス)');
+    if (surveyCellSheet) {
+      const harvest = applySurveyFindingsToUnprocessedGrids(
+        gridSheet, gridValues, readSurveyCellFindings(surveyCellSheet), nextGridId);
+      nextGridId = harvest.nextGridId;
+      if (harvest.emptySkipped > 0 || harvest.saturatedSkipped > 0) {
+        Logger.log(
+          '調査結果を適用: 0件のため省略 ' + harvest.emptySkipped + '件 / ' +
+          '飽和のため子を直接生成 ' + harvest.saturatedSkipped + '件' +
+          '(いずれもAPIコール消費なし)'
+        );
+      }
+      if (harvest.shapeMismatchSkipped > 0) {
+        Logger.log(
+          '調査結果はあるが座標が一致しないため適用しなかったセル: ' +
+          harvest.shapeMismatchSkipped + '件(生成条件が変わった可能性があるため、通常どおり検索します)'
+        );
+      }
+    }
 
     // --- コール内訳の計測 ---
     const stats = {

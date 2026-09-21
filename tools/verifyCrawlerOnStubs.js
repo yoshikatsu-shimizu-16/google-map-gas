@@ -108,7 +108,9 @@ const api = new Function(source + `
     nextStateAfterGridError: nextStateAfterGridError,
     GRID_STATUS_EMPTY: GRID_STATUS_EMPTY,
     GRID_EMPTY_STATUSES: GRID_EMPTY_STATUSES,
-    MAX_RESULT_COUNT: MAX_RESULT_COUNT
+    MAX_RESULT_COUNT: MAX_RESULT_COUNT,
+    readSurveyCellFindings: readSurveyCellFindings,
+    applySurveyFindingsToUnprocessedGrids: applySurveyFindingsToUnprocessedGrids
   };
 `)();
 
@@ -1562,6 +1564,87 @@ const surveyOnly = budgetRun({ SURVEY_MAX_CALLS: '0' });
 surveyOnly.run();
 check('SURVEY_MAX_CALLS は本番クロールに影響しない(枠を分けている意味がある)',
   surveyOnly.stub.requestCount() === 5, 'requestCount=' + surveyOnly.stub.requestCount());
+
+// =====================================================================
+console.log('\n[19] 調査結果を本番クロールに使い、答えの分かっているコールをやめる(Issue #39)');
+// =====================================================================
+// surveyAllCells(Pro段)が既に0件・飽和と分かっているセルに、crawlAllGrids(Enterprise段)が
+// もう一度コールしていた無駄を防ぐ。0件は完了扱いに、飽和は親のコールを省いていきなり
+// 子を生成することを、実際に crawlAllGrids を走らせて確認する。
+const makeHarvestStubPlaces = function(n, prefix) {
+  const places = [];
+  for (let i = 0; i < n; i++) {
+    places.push({ id: prefix + '_' + i, displayName: { text: '店' + i }, types: ['restaurant'] });
+  }
+  return places;
+};
+const harvestStub = installGasGlobals({
+  respondToSearch: function(body) {
+    const lat = body.locationRestriction.circle.center.latitude;
+    // グリッド3(疎・調査あり)=5件、グリッド4(調査なし)=3件、
+    // グリッド5(調査はあるが座標不一致のため適用されない)=2件。
+    if (Math.abs(lat - 35.80) < 0.0005) return { places: makeHarvestStubPlaces(5, 'g3') };
+    if (Math.abs(lat - 35.81) < 0.0005) return { places: makeHarvestStubPlaces(3, 'g4') };
+    if (Math.abs(lat - 35.82) < 0.0005) return { places: makeHarvestStubPlaces(2, 'g5') };
+    return { places: [] }; // 想定外の座標が来たら空(=このテストの他の期待値で検出できる)
+  }
+});
+harvestStub.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+harvestStub.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+harvestStub.sheets['グリッド一覧'] = createFakeSheet([
+  api.GRID_SHEET_HEADERS.slice(),
+  [1, 35.78, 139.90, 717, '未処理', 0, '', api.GRID_STEP, 0],          // 調査: 0件 → 完了扱いになるはず
+  [2, 35.79, 139.90, 717, '未処理', 0, '', api.GRID_STEP, 0],          // 調査: 飽和 → 親を省いて子を生成するはず
+  [3, 35.80, 139.90, 717, '未処理', 0, '', api.GRID_STEP, 0],          // 調査: 5件 → 営業データが無いので通常どおり収穫
+  [4, 35.81, 139.90, 717, '未処理', 0, '', api.GRID_STEP, 0],          // 調査に無い → 通常どおり収穫
+  [5, 35.82, 139.90, 717, '未処理', 0, '', api.GRID_STEP, 0],          // 調査はあるが座標不一致 → 適用しない
+  [6, 35.83, 139.90, 717, '未処理', api.MAX_TIER, '', api.GRID_STEP, 0], // 調査: 飽和・既にMAX_TIER → 子は作らず要確認へ
+  [7, 35.84, 139.90, 717, '処理済み(プローブ)', 0, '', api.GRID_STEP, 0] // 調査: 0件だが既に処理済み → 触らないはず
+]);
+const surveyCellSheetForHarvest = createFakeSheet([
+  api.AREA_SURVEY_CELL_HEADERS,
+  [1, 35.78, 139.90, 717, 0, 0, '', new Date()],
+  [2, 35.79, 139.90, 717, 0, 20, '飽和(20件以上)', new Date()],
+  [3, 35.80, 139.90, 717, 0, 5, '', new Date()],
+  [5, 35.90, 139.90, 717, 0, 20, '飽和(20件以上)', new Date()], // 中心緯度がグリッド一覧側(35.82)と食い違う
+  [6, 35.83, 139.90, 717, api.MAX_TIER, 20, '飽和(20件以上)', new Date()],
+  [7, 35.84, 139.90, 717, 0, 0, '', new Date()]
+]);
+harvestStub.sheets['調査(マス)'] = surveyCellSheetForHarvest;
+
+new Function(source + 'return { crawlAllGrids: crawlAllGrids };')().crawlAllGrids();
+const harvestGrid = harvestStub.sheets['グリッド一覧'].rows();
+const harvestRowById = function(id) { return harvestGrid.slice(1).find(function(r) { return r[0] === id; }); };
+
+check('0件と分かっているセルはコールせず完了扱いになる',
+  harvestRowById(1)[4] === api.GRID_STATUS_EMPTY, '処理状況=' + harvestRowById(1)[4]);
+check('飽和と分かっているセルは親のコールを省いて子を生成する',
+  harvestRowById(2)[4] === '密集(分割済み)', '処理状況=' + harvestRowById(2)[4]);
+const harvestChildren = harvestGrid.slice(1).filter(function(r) { return r[6] === 2; });
+check('その子は4件追加され、未処理のまま次回に回る(今回のAPIコールに含まれない)',
+  harvestChildren.length === 4 && harvestChildren.every(function(r) { return r[4] === '未処理' && r[5] === 1; }),
+  harvestChildren.length + '件');
+
+check('1〜19件だったセルは営業データが無いため通常どおり収穫する',
+  harvestRowById(3)[4] === '処理済み(プローブ)', '処理状況=' + harvestRowById(3)[4]);
+check('調査に無いセルは通常どおり収穫する',
+  harvestRowById(4)[4] === '処理済み(プローブ)', '処理状況=' + harvestRowById(4)[4]);
+check('調査はあるが座標が一致しないセルには適用せず、実際に検索して確かめる',
+  harvestRowById(5)[4] === '処理済み(プローブ)', '処理状況=' + harvestRowById(5)[4]);
+check('既にMAX_TIERで飽和と分かっているセルは、子を作らず要確認(上限到達)に倒す',
+  harvestRowById(6)[4] === '要確認(上限到達)', '処理状況=' + harvestRowById(6)[4]);
+check('既に処理済みのセルは、調査結果が0件でも書き換えない',
+  harvestRowById(7)[4] === '処理済み(プローブ)', '処理状況=' + harvestRowById(7)[4]);
+
+check('実際にAPIコールが発生したのは通常収穫の3セルだけ(0件・飽和・要確認セルはコール0)',
+  harvestStub.requestCount() === 3, 'requestCount=' + harvestStub.requestCount());
+
+check('適用結果をログに残す(0件1件・飽和2件)',
+  harvestStub.logs.some(function(l) {
+    return l.indexOf('0件のため省略 1件') !== -1 && l.indexOf('飽和のため子を直接生成 2件') !== -1;
+  }));
+check('座標不一致で適用しなかったこともログに残す',
+  harvestStub.logs.some(function(l) { return l.indexOf('座標が一致しないため適用しなかったセル: 1件') !== -1; }));
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);
