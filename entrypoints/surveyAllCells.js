@@ -133,7 +133,7 @@ function surveyAllCells() {
     }
 
     const found = result.places.length;
-    const saturated = found >= 20;
+    const saturated = found >= MAX_RESULT_COUNT;
     surveyed++;
     placesFound += found;
     if (found === 0) empty++;
@@ -266,8 +266,8 @@ function reportAreaSurveyDensity(cellSheet) {
   const buckets = [
     { label: '0件(探索不要)      ', test: function(n) { return n === 0; } },
     { label: '1〜4件             ', test: function(n) { return n >= 1 && n <= 4; } },
-    { label: '5〜19件(1コールで足りる)', test: function(n) { return n >= 5 && n <= 19; } },
-    { label: '20件以上(要分割)   ', test: function(n) { return n >= 20; } }
+    { label: '5〜19件(1コールで足りる)', test: function(n) { return n >= 5 && n < MAX_RESULT_COUNT; } },
+    { label: '20件以上(要分割)   ', test: function(n) { return n >= MAX_RESULT_COUNT; } }
   ];
   Logger.log('--- 累計: マスごとの店舗数の分布(' + counts.length + 'マス) ---');
   buckets.forEach(function(b) {

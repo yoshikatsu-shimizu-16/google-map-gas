@@ -95,7 +95,8 @@ const api = new Function(source + `
     childCellsOf: childCellsOf,
     CHILD_CELLS_PER_PARENT: CHILD_CELLS_PER_PARENT,
     auditGridOverlap: auditGridOverlap,
-    fixUnprocessedRootRadius: fixUnprocessedRootRadius
+    fixUnprocessedRootRadius: fixUnprocessedRootRadius,
+    MAX_RESULT_COUNT: MAX_RESULT_COUNT
   };
 `)();
 
@@ -1338,6 +1339,41 @@ const auditLogsAfterFix = overlapStub.logs.filter(function(l) { return l.indexOf
 check('修正後は不一致が1件(処理済みのBのみ)に減る',
   auditLogsAfterFix[auditLogsAfterFix.length - 1].indexOf('階層0セルの半径不一致: 1件') !== -1,
   auditLogsAfterFix[auditLogsAfterFix.length - 1]);
+
+// =====================================================================
+console.log('\n[16] 飽和判定の閾値が1箇所にまとまっている(Issue #41)');
+// =====================================================================
+// リクエストに載せる maxResultCount と飽和の判定値がずれると、「永久に分割し続ける」か
+// 「飽和を見逃す」かのどちらかが起きる。両者が同じ定数から来ていることを、
+// 実際のリクエスト本文と分割の発動条件の両方で確かめる。
+const thresholdStub = installGasGlobals({
+  respondToSearch: function(body) {
+    thresholdStub.lastRequest = body;
+    const places = [];
+    // ちょうど上限ぴったりを返す = 飽和とみなされるはず
+    for (let i = 0; i < api.MAX_RESULT_COUNT; i++) {
+      places.push({ id: 'th_' + i, displayName: { text: '店' + i }, types: ['restaurant'] });
+    }
+    return { places: places };
+  }
+});
+thresholdStub.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+thresholdStub.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+thresholdStub.sheets['グリッド一覧'] = createFakeSheet([
+  api.GRID_SHEET_HEADERS.slice(),
+  [1, 35.855, 139.955, 717, '未処理', 0, '', api.GRID_STEP]
+]);
+new Function(source + 'return { crawlAllGrids: crawlAllGrids };')().crawlAllGrids();
+
+check('リクエストの maxResultCount が MAX_RESULT_COUNT と一致する',
+  thresholdStub.lastRequest.maxResultCount === api.MAX_RESULT_COUNT,
+  'maxResultCount=' + thresholdStub.lastRequest.maxResultCount + ' / 定数=' + api.MAX_RESULT_COUNT);
+check('ちょうど上限ぴったり返ったセルは飽和とみなして分割される',
+  thresholdStub.sheets['グリッド一覧'].rows()[1][4] === '密集(分割済み)',
+  '処理状況=' + thresholdStub.sheets['グリッド一覧'].rows()[1][4]);
+check('分割で子グリッドが4件追加される',
+  thresholdStub.sheets['グリッド一覧'].rows().length - 1 === 1 + api.CHILD_CELLS_PER_PARENT,
+  (thresholdStub.sheets['グリッド一覧'].rows().length - 2) + '件');
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);

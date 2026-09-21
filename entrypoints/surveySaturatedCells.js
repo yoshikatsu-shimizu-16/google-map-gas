@@ -109,8 +109,10 @@ function surveySaturatedCells() {
         continue;
       }
       const found = result.places.length;
-      if (found >= 20) saturatedChildren++;
-      parentRows.push(toSubdividedCellRow(parent, child, found, found >= 20 ? '飽和(20件以上)' : ''));
+      if (found >= MAX_RESULT_COUNT) saturatedChildren++;
+      parentRows.push(toSubdividedCellRow(
+        parent, child, found,
+        found >= MAX_RESULT_COUNT ? '飽和(' + MAX_RESULT_COUNT + '件以上)' : ''));
     }
     if (quotaHit) break; // この親は記録しない(次回まるごとやり直す)
 
@@ -253,7 +255,7 @@ function readSubdividedCells(subSheet) {
  */
 function collectCellsNeedingSubdivision(cellSheet, surveyed) {
   const needs = [];
-  const isSaturated = function(count) { return count !== '' && count !== null && count >= 20; };
+  const isSaturated = function(count) { return count !== '' && count !== null && count >= MAX_RESULT_COUNT; };
 
   // グリッド一覧由来のマス
   const idIdx = AREA_SURVEY_CELL_HEADERS.indexOf('グリッドID');
@@ -329,7 +331,7 @@ function reportSubdivisionDepth(subSheet, pendingCount) {
     const n = row[countIdx];
     if (n === '' || n === null) return;
     if (n === 0) b.empty++;
-    else if (n < 20) b.resolved++;
+    else if (n < MAX_RESULT_COUNT) b.resolved++;
     else b.saturated++;
   });
 
@@ -344,13 +346,13 @@ function reportSubdivisionDepth(subSheet, pendingCount) {
   // 飽和マスは分割すればさらに減るので、この数字が収穫コストの下限になる。
   const harvestable = values.filter(function(row) {
     const n = row[countIdx];
-    return n !== '' && n !== null && n >= 1 && n < 20;
+    return n !== '' && n !== null && n >= 1 && n < MAX_RESULT_COUNT;
   }).length;
   Logger.log('  収穫対象(1〜19件)の分割マス: ' + harvestable + 'マス');
   // 上限階層で飽和したまま打ち切ったマス。これ以上分割できないので「割り切れた」とは言えない。
   const terminal = values.filter(function(row) {
     const n = row[countIdx];
-    return row[tierIdx] >= SURVEY_MAX_TIER && n !== '' && n !== null && n >= 20;
+    return row[tierIdx] >= SURVEY_MAX_TIER && n !== '' && n !== null && n >= MAX_RESULT_COUNT;
   }).length;
 
   if (pendingCount > 0) {
