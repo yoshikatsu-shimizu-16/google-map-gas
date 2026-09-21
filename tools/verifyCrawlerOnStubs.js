@@ -98,6 +98,11 @@ const api = new Function(source + `
     fixUnprocessedRootRadius: fixUnprocessedRootRadius,
     GRID_DONE_STATUSES: GRID_DONE_STATUSES,
     GRID_COL_STATUS: GRID_COL_STATUS,
+    GRID_COL_ERROR_COUNT: GRID_COL_ERROR_COUNT,
+    GRID_STATUS_ERROR: GRID_STATUS_ERROR,
+    GRID_STATUS_ERROR_EXHAUSTED: GRID_STATUS_ERROR_EXHAUSTED,
+    MAX_GRID_ERROR_RETRIES: MAX_GRID_ERROR_RETRIES,
+    nextStateAfterGridError: nextStateAfterGridError,
     GRID_STATUS_EMPTY: GRID_STATUS_EMPTY,
     GRID_EMPTY_STATUSES: GRID_EMPTY_STATUSES,
     MAX_RESULT_COUNT: MAX_RESULT_COUNT
@@ -182,12 +187,15 @@ const sheet5 = createFakeSheet([
 ]);
 api.ensureGridSchemaMigrated(sheet5);
 let rows = sheet5.rows();
-check('ヘッダーが8列になる', rows[0].join('|') === api.GRID_SHEET_HEADERS.join('|'), rows[0].join('|'));
+check('ヘッダーが最新スキーマ(9列)になる',
+  rows[0].join('|') === api.GRID_SHEET_HEADERS.join('|'), rows[0].join('|'));
 check('処理状況が保持される',
   rows[1][4] === '処理済み' && rows[2][4] === '密集(タイプ分割済み)' && rows[3][4] === '未処理');
 check('既存の半径700mが書き換えられない', rows[1][3] === 700, '半径=' + rows[1][3] + 'm');
 check('階層0・親なしが補完される', rows[1][5] === 0 && rows[1][6] === '');
 check('セルサイズに0.01度が入る', rows[1][7] === api.GRID_STEP, 'セルサイズ=' + rows[1][7]);
+check('エラー回数が0で補完される',
+  rows.slice(1).every(function(r) { return r[api.GRID_COL_ERROR_COUNT - 1] === 0; }));
 
 const snapshot = JSON.stringify(sheet5.rows());
 api.ensureGridSchemaMigrated(sheet5);
@@ -1399,6 +1407,83 @@ check('ちょうど上限ぴったり返ったセルは飽和とみなして分�
 check('分割で子グリッドが4件追加される',
   thresholdStub.sheets['グリッド一覧'].rows().length - 1 === 1 + api.CHILD_CELLS_PER_PARENT,
   (thresholdStub.sheets['グリッド一覧'].rows().length - 2) + '件');
+
+// =====================================================================
+console.log('\n[17] 失敗したセルの再試行打ち切り(Issue #37)');
+// =====================================================================
+// 純関数としての判定
+check('1回目の失敗は「エラー」のまま(次回再試行する)',
+  api.nextStateAfterGridError(0).status === api.GRID_STATUS_ERROR &&
+  api.nextStateAfterGridError(0).errorCount === 1 &&
+  api.nextStateAfterGridError(0).exhausted === false);
+check('上限に達したら「要確認(エラー継続)」へ倒れる',
+  api.nextStateAfterGridError(api.MAX_GRID_ERROR_RETRIES - 1).status === api.GRID_STATUS_ERROR_EXHAUSTED &&
+  api.nextStateAfterGridError(api.MAX_GRID_ERROR_RETRIES - 1).exhausted === true,
+  'MAX_GRID_ERROR_RETRIES=' + api.MAX_GRID_ERROR_RETRIES);
+check('空欄・非数値のエラー回数は0として扱う',
+  api.nextStateAfterGridError('').errorCount === 1 &&
+  api.nextStateAfterGridError(null).errorCount === 1 &&
+  api.nextStateAfterGridError('あ').errorCount === 1 &&
+  api.nextStateAfterGridError(-5).errorCount === 1);
+check('打ち切りステータスは完了扱い(=二度と叩かれない)',
+  api.GRID_DONE_STATUSES.indexOf(api.GRID_STATUS_ERROR_EXHAUSTED) !== -1);
+check('「エラー」は完了扱いではない(=次回再試行される)',
+  api.GRID_DONE_STATUSES.indexOf(api.GRID_STATUS_ERROR) === -1);
+
+// crawlAllGrids を通した実挙動: 常に400を返すセルが1つだけある状態で繰り返し実行する
+const errorStub = installGasGlobals({
+  respondToSearch: function(body) {
+    const c = body.locationRestriction.circle.center;
+    // 1件だけ恒久的に失敗するセルを作る(それ以外は0件で即確定)
+    if (c.latitude > 35.7745 && c.latitude < 35.7755) return { responseCode: 400, places: [] };
+    return { places: [] };
+  }
+});
+errorStub.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+errorStub.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+// 対象を小さくするため、グリッドは手で3行だけ用意する
+errorStub.sheets['グリッド一覧'] = createFakeSheet([
+  api.GRID_SHEET_HEADERS.slice(),
+  [1, 35.775, 139.905, 717, '未処理', 0, '', api.GRID_STEP, 0],  // 常に400を返す
+  [2, 35.785, 139.905, 717, '未処理', 0, '', api.GRID_STEP, 0],
+  [3, 35.795, 139.905, 717, '未処理', 0, '', api.GRID_STEP, 0]
+]);
+
+const errorApi = new Function(source + `
+  return { crawlAllGrids: crawlAllGrids };
+`)();
+
+const errorRow = function() { return errorStub.sheets['グリッド一覧'].rows()[1]; };
+const callsPerRun = [];
+let previousCalls = 0;
+for (let run = 1; run <= api.MAX_GRID_ERROR_RETRIES + 1; run++) {
+  errorApi.crawlAllGrids();
+  callsPerRun.push(errorStub.requestCount() - previousCalls);
+  previousCalls = errorStub.requestCount();
+}
+
+check('失敗するたびにエラー回数が1ずつ増える',
+  errorRow()[api.GRID_COL_ERROR_COUNT - 1] === api.MAX_GRID_ERROR_RETRIES,
+  'エラー回数=' + errorRow()[api.GRID_COL_ERROR_COUNT - 1]);
+check('上限に達したセルが「要確認(エラー継続)」になる',
+  errorRow()[api.GRID_COL_STATUS - 1] === api.GRID_STATUS_ERROR_EXHAUSTED,
+  '処理状況=' + errorRow()[api.GRID_COL_STATUS - 1]);
+// 1回目は3セルすべてを処理するので3コール。2回目以降は失敗したセルだけが未処理として
+// 残るため、打ち切りに至るまで毎回1コールずつ再試行される。
+check('1回目は3セルぶん、2回目以降は失敗したセルだけを1コールずつ再試行する',
+  callsPerRun[0] === 3 &&
+  callsPerRun.slice(1, api.MAX_GRID_ERROR_RETRIES).every(function(n) { return n === 1; }),
+  '各実行のコール数=' + JSON.stringify(callsPerRun));
+check('打ち切ったあとの実行ではコールが1件も発生しない',
+  callsPerRun[api.MAX_GRID_ERROR_RETRIES] === 0,
+  '打ち切り後のコール数=' + callsPerRun[api.MAX_GRID_ERROR_RETRIES]);
+check('打ち切りをログに残す',
+  errorStub.logs.some(function(l) { return l.indexOf('自動での再試行を打ち切りました') !== -1; }));
+check('失敗しなかったセルはエラー回数0のまま完了する',
+  errorStub.sheets['グリッド一覧'].rows().slice(2).every(function(r) {
+    return r[api.GRID_COL_ERROR_COUNT - 1] === 0 &&
+      api.GRID_DONE_STATUSES.indexOf(r[api.GRID_COL_STATUS - 1]) !== -1;
+  }));
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);

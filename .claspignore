@@ -17,6 +17,7 @@
 !lib/crawler/PlaceRowWriter.js
 !lib/crawler/PlaceDataSheetFilter.js
 !lib/crawler/PlaceDataSchemaMigration.js
+!lib/crawler/GridErrorRetryPolicy.js
 !lib/catalog/PlaceTypeSearchSet.js
 !lib/catalog/PlaceTypeCoverageAnalysis.js
 !entrypoints/auditPlaceTypeSetCoverage.js
