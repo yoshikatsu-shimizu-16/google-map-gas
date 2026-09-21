@@ -63,7 +63,7 @@ function generateGridList() {
       const centerLat = lat + gridStep / 2;
       const centerLng = lng + gridStep / 2;
       const radius = cellCoverRadiusMeters(gridStep, centerLat);
-      rows.push([gridId, centerLat, centerLng, radius, '未処理', 0, '', gridStep]); // 階層0=元グリッド
+      rows.push([gridId, centerLat, centerLng, radius, '未処理', 0, '', gridStep, 0]); // 階層0=元グリッド
       gridId++;
     }
   }

@@ -22,6 +22,14 @@
  *      マスが実在する。この場合はタイプ分割が必要 — 次のステップとして
  *      docs/survey-next-actions-2026-09-20.md に記載)。
  *
+ * エラー行の再検索の打ち切り:
+ *   検索でエラーになった行は「エラー」のまま完了扱いにならないため、次回実行で
+ *   必ず再検索される。座標不正やAPI側の永続4xxなど恒久的に失敗する行があると、
+ *   日次トリガーのたびに枠を1コールずつ消費してしまう。「リトライ回数」列で
+ *   連続失敗回数を数え、MAX_ERROR_RETRIES 回に達したら「要確認(エラー継続)」に
+ *   倒して以後の再検索を止める。一時的な障害なら数回の再実行で成功し、その時点で
+ *   完了ステータスに移るため、リトライ回数はそれ以上増えない。
+ *
  * その他の特徴:
  *   - LockService による排他制御を行う。日次トリガーの実行が長引いている間に
  *     手動で再実行したり、トリガーが多重起動したりしても、先に実行中の処理が
@@ -52,6 +60,7 @@ function crawlAllGrids() {
   try {
     const startTime = new Date().getTime();
     const MAX_RUNTIME_MS = 4.5 * 60 * 1000; // GASの実行時間上限(6分)に対する安全マージン
+    const MAX_ERROR_RETRIES = 3; // この回数だけ連続で失敗したら「要確認(エラー継続)」に倒す
 
     const scriptProps = PropertiesService.getScriptProperties();
     const apiKey = scriptProps.getProperty('GOOGLE_MAPS_API_KEY');
@@ -93,6 +102,7 @@ function crawlAllGrids() {
     let newRowsCount = 0;
     let denseSplitCount = 0;
     let needsReviewCount = 0;
+    let errorRetryExceededCount = 0;
     let nextGridId = gridValues.reduce(function(max, r) { return Math.max(max, r[0]); }, 0) + 1;
     let quotaExceeded = false;
 
@@ -182,7 +192,15 @@ function crawlAllGrids() {
           needsReviewCount++;
         }
       } else if (result.hadFailure) {
-        gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('エラー');
+        const retryCount = (row[GRID_COL_RETRY_COUNT - 1] || 0) + 1;
+        gridSheet.getRange(i + 2, GRID_COL_RETRY_COUNT).setValue(retryCount);
+        if (retryCount >= MAX_ERROR_RETRIES) {
+          // 恒久的な障害の疑い。これ以上再検索せず、人間の目視確認に委ねる
+          gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue(GRID_STATUS_ERROR_RETRY_EXCEEDED);
+          errorRetryExceededCount++;
+        } else {
+          gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('エラー');
+        }
       } else {
         gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('処理済み(プローブ)');
         processedCount++;
@@ -204,6 +222,7 @@ function crawlAllGrids() {
       '今回処理したグリッド数: ' + processedCount +
       ' / 密集で子グリッド生成: ' + denseSplitCount +
       ' / 要確認(上限到達): ' + needsReviewCount +
+      ' / 要確認(エラー継続): ' + errorRetryExceededCount +
       ' / 新規追加件数: ' + newRowsCount +
       ' / APIコール回数: ' + stats.totalCalls +
       ' / 累計件数: ' + (finalLastRow - 1)

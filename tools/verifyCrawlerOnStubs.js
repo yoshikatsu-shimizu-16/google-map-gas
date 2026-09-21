@@ -165,12 +165,13 @@ const sheet5 = createFakeSheet([
 ]);
 api.ensureGridSchemaMigrated(sheet5);
 let rows = sheet5.rows();
-check('ヘッダーが8列になる', rows[0].join('|') === api.GRID_SHEET_HEADERS.join('|'), rows[0].join('|'));
+check('ヘッダーが9列になる', rows[0].join('|') === api.GRID_SHEET_HEADERS.join('|'), rows[0].join('|'));
 check('処理状況が保持される',
   rows[1][4] === '処理済み' && rows[2][4] === '密集(タイプ分割済み)' && rows[3][4] === '未処理');
 check('既存の半径700mが書き換えられない', rows[1][3] === 700, '半径=' + rows[1][3] + 'm');
 check('階層0・親なしが補完される', rows[1][5] === 0 && rows[1][6] === '');
 check('セルサイズに0.01度が入る', rows[1][7] === api.GRID_STEP, 'セルサイズ=' + rows[1][7]);
+check('リトライ回数に0が補完される', rows[1][8] === 0 && rows[2][8] === 0 && rows[3][8] === 0);
 
 const snapshot = JSON.stringify(sheet5.rows());
 api.ensureGridSchemaMigrated(sheet5);
@@ -205,6 +206,8 @@ check('旧ロジックのtier1行の階層がMAX_TIERに固定される',
 check('旧ロジックのtier2行の階層がMAX_TIERに固定される',
   rows[3][5] === api.MAX_TIER, '階層=' + rows[3][5] + ' (MAX_TIER=' + api.MAX_TIER + ')');
 check('tier0の親行は階層0のまま', rows[1][5] === 0, '階層=' + rows[1][5]);
+check('リトライ回数に0が補完される(8列スキーマにも列自体が無かった)',
+  rows[1][8] === 0 && rows[2][8] === 0 && rows[3][8] === 0);
 
 // =====================================================================
 console.log('\n[4] HP種別の判定(classifyWebsite)');
@@ -1338,6 +1341,72 @@ const auditLogsAfterFix = overlapStub.logs.filter(function(l) { return l.indexOf
 check('修正後は不一致が1件(処理済みのBのみ)に減る',
   auditLogsAfterFix[auditLogsAfterFix.length - 1].indexOf('階層0セルの半径不一致: 1件') !== -1,
   auditLogsAfterFix[auditLogsAfterFix.length - 1]);
+
+// =====================================================================
+console.log('\n[16] エラー行の再検索を上限で打ち切る(Issue #37)');
+// =====================================================================
+// 恒久的に失敗する行(座標不正、API側の永続4xxなど)を毎日再検索し続けると、
+// 日次トリガーのたびに枠が1コールずつ溶ける。リトライ回数が上限に達したら
+// 「要確認(エラー継続)」に倒し、以後の再検索を止めることを検証する。
+const errorRun = installGasGlobals({
+  respondToSearch: function() {
+    return { responseCode: 400 }; // クォータ以外の恒久的なエラーを模す
+  }
+});
+errorRun.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+errorRun.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+errorRun.sheets['グリッド一覧'] = createFakeSheet([
+  api.GRID_SHEET_HEADERS,
+  [1, 35.80, 139.95, 717, '未処理', 0, '', api.GRID_STEP, 0]
+]);
+
+api.crawlAllGrids();
+let errorGrid = errorRun.sheets['グリッド一覧'].rows();
+check('1回目の失敗はまだ「エラー」のまま(打ち切らない)', errorGrid[1][4] === 'エラー', errorGrid[1][4]);
+check('リトライ回数が1になる', errorGrid[1][8] === 1, 'リトライ回数=' + errorGrid[1][8]);
+
+api.crawlAllGrids();
+errorGrid = errorRun.sheets['グリッド一覧'].rows();
+check('2回目の失敗でもまだ「エラー」のまま', errorGrid[1][4] === 'エラー', errorGrid[1][4]);
+check('リトライ回数が2になる', errorGrid[1][8] === 2, 'リトライ回数=' + errorGrid[1][8]);
+
+api.crawlAllGrids();
+errorGrid = errorRun.sheets['グリッド一覧'].rows();
+check('3回目の失敗で「要確認(エラー継続)」に倒れる', errorGrid[1][4] === '要確認(エラー継続)', errorGrid[1][4]);
+check('リトライ回数が3で確定する', errorGrid[1][8] === 3, 'リトライ回数=' + errorGrid[1][8]);
+
+const requestsBeforeExtraRun = errorRun.requestCount();
+api.crawlAllGrids();
+check('打ち切り後は再検索されない(APIコールが増えない)',
+  errorRun.requestCount() === requestsBeforeExtraRun, 'requestCount=' + errorRun.requestCount());
+check('打ち切り後も「要確認(エラー継続)」のまま',
+  errorRun.sheets['グリッド一覧'].rows()[1][4] === '要確認(エラー継続)');
+
+// 一時的な障害なら、途中で成功すればその時点で完了ステータスに移り、
+// それ以上リトライ回数が増えないことも確認する
+let recovered = false;
+const recoverRun = installGasGlobals({
+  respondToSearch: function() {
+    if (!recovered) {
+      recovered = true;
+      return { responseCode: 400 };
+    }
+    return { places: [] };
+  }
+});
+recoverRun.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+recoverRun.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+recoverRun.sheets['グリッド一覧'] = createFakeSheet([
+  api.GRID_SHEET_HEADERS,
+  [1, 35.80, 139.95, 717, '未処理', 0, '', api.GRID_STEP, 0]
+]);
+api.crawlAllGrids();
+api.crawlAllGrids();
+const recoveredGrid = recoverRun.sheets['グリッド一覧'].rows();
+check('一時的な障害から回復すると完了ステータスに移る(処理済み(プローブ))',
+  recoveredGrid[1][4] === '処理済み(プローブ)', recoveredGrid[1][4]);
+check('回復後はリトライ回数が増えたまま残る(以後参照されないので無害)',
+  recoveredGrid[1][8] === 1, 'リトライ回数=' + recoveredGrid[1][8]);
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);
