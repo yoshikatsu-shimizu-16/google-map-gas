@@ -100,7 +100,15 @@ const api = new Function(source + `
     readCrawlMaxCalls: readCrawlMaxCalls,
     readSurveyMaxCalls: readSurveyMaxCalls,
     GRID_DONE_STATUSES: GRID_DONE_STATUSES,
-    GRID_COL_STATUS: GRID_COL_STATUS
+    GRID_COL_STATUS: GRID_COL_STATUS,
+    GRID_COL_ERROR_COUNT: GRID_COL_ERROR_COUNT,
+    GRID_STATUS_ERROR: GRID_STATUS_ERROR,
+    GRID_STATUS_ERROR_EXHAUSTED: GRID_STATUS_ERROR_EXHAUSTED,
+    MAX_GRID_ERROR_RETRIES: MAX_GRID_ERROR_RETRIES,
+    nextStateAfterGridError: nextStateAfterGridError,
+    GRID_STATUS_EMPTY: GRID_STATUS_EMPTY,
+    GRID_EMPTY_STATUSES: GRID_EMPTY_STATUSES,
+    MAX_RESULT_COUNT: MAX_RESULT_COUNT
   };
 `)();
 
@@ -116,7 +124,19 @@ grid.slice(1).forEach(function(r) { statusCounts[r[4]] = (statusCounts[r[4]] || 
 console.log('       処理状況: ' + JSON.stringify(statusCounts));
 
 check('疎セルに「処理済み(プローブ)」が付く', (statusCounts['処理済み(プローブ)'] || 0) > 0);
-check('飲食店ゼロのセルも「処理済み(プローブ)」に含まれる(グループ省略の概念が無いため0件を区別しない)',
+// 0件セルは1〜19件と区別して記録する(Issue #38)。1コール払って得た
+// 「ここには店が無い」という情報を、探索計画を絞る根拠として残すため。
+// スタブは南寄り(緯度35.80未満)を0件にしている。
+check('飲食店ゼロのセルに「処理済み(0件)」が付く',
+  (statusCounts[api.GRID_STATUS_EMPTY] || 0) > 0, (statusCounts[api.GRID_STATUS_EMPTY] || 0) + '件');
+check('0件セルが「処理済み(プローブ)」に混ざらない',
+  grid.slice(1).every(function(r) {
+    const isEmptyCell = r[1] < 35.80;
+    return !isEmptyCell || r[4] === api.GRID_STATUS_EMPTY;
+  }));
+check('0件セルも完了扱い(=再探索されない)',
+  api.GRID_DONE_STATUSES.indexOf(api.GRID_STATUS_EMPTY) !== -1);
+check('旧方式のステータスは新たに書かれない',
   (statusCounts['処理済み(A=0のため省略)'] || 0) === 0, (statusCounts['処理済み(A=0のため省略)'] || 0) + '件');
 check('密集セルに「密集(分割済み)」が付く', (statusCounts['密集(分割済み)'] || 0) > 0);
 
@@ -170,12 +190,15 @@ const sheet5 = createFakeSheet([
 ]);
 api.ensureGridSchemaMigrated(sheet5);
 let rows = sheet5.rows();
-check('ヘッダーが8列になる', rows[0].join('|') === api.GRID_SHEET_HEADERS.join('|'), rows[0].join('|'));
+check('ヘッダーが最新スキーマ(9列)になる',
+  rows[0].join('|') === api.GRID_SHEET_HEADERS.join('|'), rows[0].join('|'));
 check('処理状況が保持される',
   rows[1][4] === '処理済み' && rows[2][4] === '密集(タイプ分割済み)' && rows[3][4] === '未処理');
 check('既存の半径700mが書き換えられない', rows[1][3] === 700, '半径=' + rows[1][3] + 'm');
 check('階層0・親なしが補完される', rows[1][5] === 0 && rows[1][6] === '');
 check('セルサイズに0.01度が入る', rows[1][7] === api.GRID_STEP, 'セルサイズ=' + rows[1][7]);
+check('エラー回数が0で補完される',
+  rows.slice(1).every(function(r) { return r[api.GRID_COL_ERROR_COUNT - 1] === 0; }));
 
 const snapshot = JSON.stringify(sheet5.rows());
 api.ensureGridSchemaMigrated(sheet5);
@@ -403,9 +426,11 @@ const runCrawl = function(cells) {
 const sparseRun = runCrawl([SPARSE_CELL, EMPTY_CELL]);
 const sparseStatuses = sparseRun.gridRows.slice(1).map(function(r) { return r[4]; });
 check('疎セルに「処理済み(プローブ)」が付く', sparseStatuses[0] === '処理済み(プローブ)', sparseStatuses[0]);
-check('空セルにも「処理済み(プローブ)」が付く(プローブは何も省略していないため0件と区別しない)',
-  sparseStatuses[1] === '処理済み(プローブ)', sparseStatuses[1]);
+check('空セルには「処理済み(0件)」が付く(1コール払って得た「店が無い」を残すため)',
+  sparseStatuses[1] === api.GRID_STATUS_EMPTY, sparseStatuses[1]);
 check('疎セル・空セルとも1回のコールで確定する(2セルでコール数2)',
+  sparseRun.stub.requestCount() === 2, 'requestCount=' + sparseRun.stub.requestCount());
+check('0件セルを区別してもコール数は増えない(記録の仕方が変わるだけ)',
   sparseRun.stub.requestCount() === 2, 'requestCount=' + sparseRun.stub.requestCount());
 
 const searchBreakdown = sparseRun.stub.logs.filter(function(l) { return l.indexOf('[検索内訳]') === 0; }).pop();
@@ -770,12 +795,16 @@ check('対象外にした件数を報告する',
 // --- 探索済みセルによる答え合わせ(APIコール0) ---
 // 予測が0件と言ったセルのうち探索済みのものは、Googleでの結果がシートに残っている。
 // コールを使う前にOSMの信頼度が分かる。
+// 0件を表すステータスは書かれた時代で違う(旧方式=グループA省略 / 現行=プレイスタイプ集合0件)。
+// 片方しか数えないと、通常経路を統一したあとに処理された行が丸ごと「外れ」に倒れるため、
+// 両方を混ぜた状態で的中率が正しく出ることを見る(Issue #38)。
 const A_ZERO = api.GRID_STATUS_EMPTY_BY_GROUP_A;
+const NEW_ZERO = api.GRID_STATUS_EMPTY;
 const accuracyCells = [
-  // Googleでも見つからなかった3セル = 予測が当たり
+  // Googleでも見つからなかった3セル = 予測が当たり(旧ステータス2件 + 現行ステータス1件)
   [api.OSM_EMPTY_GRID_IDS[0], 35.90, 140.10, 717, A_ZERO, 0, '', 0.01],
   [api.OSM_EMPTY_GRID_IDS[1], 35.90, 140.09, 717, A_ZERO, 0, '', 0.01],
-  [api.OSM_EMPTY_GRID_IDS[2], 35.90, 140.08, 717, A_ZERO, 0, '', 0.01],
+  [api.OSM_EMPTY_GRID_IDS[2], 35.90, 140.08, 717, NEW_ZERO, 0, '', 0.01],
   // Googleでは店が見つかった1セル = 予測が外れ
   [api.OSM_EMPTY_GRID_IDS[3], 35.90, 140.07, 717, '処理済み', 0, '', 0.01]
 ];
@@ -784,9 +813,12 @@ const accuracy = runSurvey({
 }, null);
 const accuracyLogs = accuracy.logs.join('\n');
 check('答え合わせにAPIコールを使わない', accuracy.requestCount() === 0, accuracy.requestCount() + '回');
-check('予測が当たったセル数を報告する',
+check('予測が当たったセル数を報告する(旧・現行どちらの0件ステータスも数える)',
   accuracyLogs.indexOf('Googleでも見つからなかった: 3セル') !== -1,
   accuracy.logs.filter(function(l) { return l.indexOf('見つからなかった') !== -1; })[0] || '(報告なし)');
+check('0件を表すステータスの一覧に旧・現行の両方が入っている',
+  api.GRID_EMPTY_STATUSES.indexOf(A_ZERO) !== -1 && api.GRID_EMPTY_STATUSES.indexOf(NEW_ZERO) !== -1,
+  JSON.stringify(api.GRID_EMPTY_STATUSES));
 check('予測が外れたセル数を報告する',
   accuracyLogs.indexOf('Googleでは店が見つかった  : 1セル') !== -1,
   accuracy.logs.filter(function(l) { return l.indexOf('見つかった  :') !== -1; })[0] || '(報告なし)');
@@ -1345,7 +1377,119 @@ check('修正後は不一致が1件(処理済みのBのみ)に減る',
   auditLogsAfterFix[auditLogsAfterFix.length - 1]);
 
 // =====================================================================
-console.log('\n[16] 本番クロールの1実行あたりのコール上限(Issue #40)');
+console.log('\n[16] 飽和判定の閾値が1箇所にまとまっている(Issue #41)');
+// =====================================================================
+// リクエストに載せる maxResultCount と飽和の判定値がずれると、「永久に分割し続ける」か
+// 「飽和を見逃す」かのどちらかが起きる。両者が同じ定数から来ていることを、
+// 実際のリクエスト本文と分割の発動条件の両方で確かめる。
+const thresholdStub = installGasGlobals({
+  respondToSearch: function(body) {
+    thresholdStub.lastRequest = body;
+    const places = [];
+    // ちょうど上限ぴったりを返す = 飽和とみなされるはず
+    for (let i = 0; i < api.MAX_RESULT_COUNT; i++) {
+      places.push({ id: 'th_' + i, displayName: { text: '店' + i }, types: ['restaurant'] });
+    }
+    return { places: places };
+  }
+});
+thresholdStub.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+thresholdStub.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+thresholdStub.sheets['グリッド一覧'] = createFakeSheet([
+  api.GRID_SHEET_HEADERS.slice(),
+  [1, 35.855, 139.955, 717, '未処理', 0, '', api.GRID_STEP]
+]);
+new Function(source + 'return { crawlAllGrids: crawlAllGrids };')().crawlAllGrids();
+
+check('リクエストの maxResultCount が MAX_RESULT_COUNT と一致する',
+  thresholdStub.lastRequest.maxResultCount === api.MAX_RESULT_COUNT,
+  'maxResultCount=' + thresholdStub.lastRequest.maxResultCount + ' / 定数=' + api.MAX_RESULT_COUNT);
+check('ちょうど上限ぴったり返ったセルは飽和とみなして分割される',
+  thresholdStub.sheets['グリッド一覧'].rows()[1][4] === '密集(分割済み)',
+  '処理状況=' + thresholdStub.sheets['グリッド一覧'].rows()[1][4]);
+check('分割で子グリッドが4件追加される',
+  thresholdStub.sheets['グリッド一覧'].rows().length - 1 === 1 + api.CHILD_CELLS_PER_PARENT,
+  (thresholdStub.sheets['グリッド一覧'].rows().length - 2) + '件');
+
+// =====================================================================
+console.log('\n[17] 失敗したセルの再試行打ち切り(Issue #37)');
+// =====================================================================
+// 純関数としての判定
+check('1回目の失敗は「エラー」のまま(次回再試行する)',
+  api.nextStateAfterGridError(0).status === api.GRID_STATUS_ERROR &&
+  api.nextStateAfterGridError(0).errorCount === 1 &&
+  api.nextStateAfterGridError(0).exhausted === false);
+check('上限に達したら「要確認(エラー継続)」へ倒れる',
+  api.nextStateAfterGridError(api.MAX_GRID_ERROR_RETRIES - 1).status === api.GRID_STATUS_ERROR_EXHAUSTED &&
+  api.nextStateAfterGridError(api.MAX_GRID_ERROR_RETRIES - 1).exhausted === true,
+  'MAX_GRID_ERROR_RETRIES=' + api.MAX_GRID_ERROR_RETRIES);
+check('空欄・非数値のエラー回数は0として扱う',
+  api.nextStateAfterGridError('').errorCount === 1 &&
+  api.nextStateAfterGridError(null).errorCount === 1 &&
+  api.nextStateAfterGridError('あ').errorCount === 1 &&
+  api.nextStateAfterGridError(-5).errorCount === 1);
+check('打ち切りステータスは完了扱い(=二度と叩かれない)',
+  api.GRID_DONE_STATUSES.indexOf(api.GRID_STATUS_ERROR_EXHAUSTED) !== -1);
+check('「エラー」は完了扱いではない(=次回再試行される)',
+  api.GRID_DONE_STATUSES.indexOf(api.GRID_STATUS_ERROR) === -1);
+
+// crawlAllGrids を通した実挙動: 常に400を返すセルが1つだけある状態で繰り返し実行する
+const errorStub = installGasGlobals({
+  respondToSearch: function(body) {
+    const c = body.locationRestriction.circle.center;
+    // 1件だけ恒久的に失敗するセルを作る(それ以外は0件で即確定)
+    if (c.latitude > 35.7745 && c.latitude < 35.7755) return { responseCode: 400, places: [] };
+    return { places: [] };
+  }
+});
+errorStub.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+errorStub.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+// 対象を小さくするため、グリッドは手で3行だけ用意する
+errorStub.sheets['グリッド一覧'] = createFakeSheet([
+  api.GRID_SHEET_HEADERS.slice(),
+  [1, 35.775, 139.905, 717, '未処理', 0, '', api.GRID_STEP, 0],  // 常に400を返す
+  [2, 35.785, 139.905, 717, '未処理', 0, '', api.GRID_STEP, 0],
+  [3, 35.795, 139.905, 717, '未処理', 0, '', api.GRID_STEP, 0]
+]);
+
+const errorApi = new Function(source + `
+  return { crawlAllGrids: crawlAllGrids };
+`)();
+
+const errorRow = function() { return errorStub.sheets['グリッド一覧'].rows()[1]; };
+const callsPerRun = [];
+let previousCalls = 0;
+for (let run = 1; run <= api.MAX_GRID_ERROR_RETRIES + 1; run++) {
+  errorApi.crawlAllGrids();
+  callsPerRun.push(errorStub.requestCount() - previousCalls);
+  previousCalls = errorStub.requestCount();
+}
+
+check('失敗するたびにエラー回数が1ずつ増える',
+  errorRow()[api.GRID_COL_ERROR_COUNT - 1] === api.MAX_GRID_ERROR_RETRIES,
+  'エラー回数=' + errorRow()[api.GRID_COL_ERROR_COUNT - 1]);
+check('上限に達したセルが「要確認(エラー継続)」になる',
+  errorRow()[api.GRID_COL_STATUS - 1] === api.GRID_STATUS_ERROR_EXHAUSTED,
+  '処理状況=' + errorRow()[api.GRID_COL_STATUS - 1]);
+// 1回目は3セルすべてを処理するので3コール。2回目以降は失敗したセルだけが未処理として
+// 残るため、打ち切りに至るまで毎回1コールずつ再試行される。
+check('1回目は3セルぶん、2回目以降は失敗したセルだけを1コールずつ再試行する',
+  callsPerRun[0] === 3 &&
+  callsPerRun.slice(1, api.MAX_GRID_ERROR_RETRIES).every(function(n) { return n === 1; }),
+  '各実行のコール数=' + JSON.stringify(callsPerRun));
+check('打ち切ったあとの実行ではコールが1件も発生しない',
+  callsPerRun[api.MAX_GRID_ERROR_RETRIES] === 0,
+  '打ち切り後のコール数=' + callsPerRun[api.MAX_GRID_ERROR_RETRIES]);
+check('打ち切りをログに残す',
+  errorStub.logs.some(function(l) { return l.indexOf('自動での再試行を打ち切りました') !== -1; }));
+check('失敗しなかったセルはエラー回数0のまま完了する',
+  errorStub.sheets['グリッド一覧'].rows().slice(2).every(function(r) {
+    return r[api.GRID_COL_ERROR_COUNT - 1] === 0 &&
+      api.GRID_DONE_STATUSES.indexOf(r[api.GRID_COL_STATUS - 1]) !== -1;
+  }));
+
+// =====================================================================
+console.log('\n[18] 本番クロールの1実行あたりのコール上限(Issue #40)');
 // =====================================================================
 // 月間上限は暴走を止める最後の砦で、こちらは挙動を変えた直後に様子を見るための手綱。
 // 上限で止めても進捗は書き込み済みなので、再実行で続きから再開できることまで見る。
