@@ -95,7 +95,11 @@ const api = new Function(source + `
     childCellsOf: childCellsOf,
     CHILD_CELLS_PER_PARENT: CHILD_CELLS_PER_PARENT,
     auditGridOverlap: auditGridOverlap,
-    fixUnprocessedRootRadius: fixUnprocessedRootRadius
+    fixUnprocessedRootRadius: fixUnprocessedRootRadius,
+    GRID_DONE_STATUSES: GRID_DONE_STATUSES,
+    GRID_COL_STATUS: GRID_COL_STATUS,
+    GRID_STATUS_EMPTY: GRID_STATUS_EMPTY,
+    GRID_EMPTY_STATUSES: GRID_EMPTY_STATUSES
   };
 `)();
 
@@ -111,7 +115,19 @@ grid.slice(1).forEach(function(r) { statusCounts[r[4]] = (statusCounts[r[4]] || 
 console.log('       処理状況: ' + JSON.stringify(statusCounts));
 
 check('疎セルに「処理済み(プローブ)」が付く', (statusCounts['処理済み(プローブ)'] || 0) > 0);
-check('飲食店ゼロのセルも「処理済み(プローブ)」に含まれる(グループ省略の概念が無いため0件を区別しない)',
+// 0件セルは1〜19件と区別して記録する(Issue #38)。1コール払って得た
+// 「ここには店が無い」という情報を、探索計画を絞る根拠として残すため。
+// スタブは南寄り(緯度35.80未満)を0件にしている。
+check('飲食店ゼロのセルに「処理済み(0件)」が付く',
+  (statusCounts[api.GRID_STATUS_EMPTY] || 0) > 0, (statusCounts[api.GRID_STATUS_EMPTY] || 0) + '件');
+check('0件セルが「処理済み(プローブ)」に混ざらない',
+  grid.slice(1).every(function(r) {
+    const isEmptyCell = r[1] < 35.80;
+    return !isEmptyCell || r[4] === api.GRID_STATUS_EMPTY;
+  }));
+check('0件セルも完了扱い(=再探索されない)',
+  api.GRID_DONE_STATUSES.indexOf(api.GRID_STATUS_EMPTY) !== -1);
+check('旧方式のステータスは新たに書かれない',
   (statusCounts['処理済み(A=0のため省略)'] || 0) === 0, (statusCounts['処理済み(A=0のため省略)'] || 0) + '件');
 check('密集セルに「密集(分割済み)」が付く', (statusCounts['密集(分割済み)'] || 0) > 0);
 
@@ -398,9 +414,11 @@ const runCrawl = function(cells) {
 const sparseRun = runCrawl([SPARSE_CELL, EMPTY_CELL]);
 const sparseStatuses = sparseRun.gridRows.slice(1).map(function(r) { return r[4]; });
 check('疎セルに「処理済み(プローブ)」が付く', sparseStatuses[0] === '処理済み(プローブ)', sparseStatuses[0]);
-check('空セルにも「処理済み(プローブ)」が付く(プローブは何も省略していないため0件と区別しない)',
-  sparseStatuses[1] === '処理済み(プローブ)', sparseStatuses[1]);
+check('空セルには「処理済み(0件)」が付く(1コール払って得た「店が無い」を残すため)',
+  sparseStatuses[1] === api.GRID_STATUS_EMPTY, sparseStatuses[1]);
 check('疎セル・空セルとも1回のコールで確定する(2セルでコール数2)',
+  sparseRun.stub.requestCount() === 2, 'requestCount=' + sparseRun.stub.requestCount());
+check('0件セルを区別してもコール数は増えない(記録の仕方が変わるだけ)',
   sparseRun.stub.requestCount() === 2, 'requestCount=' + sparseRun.stub.requestCount());
 
 const searchBreakdown = sparseRun.stub.logs.filter(function(l) { return l.indexOf('[検索内訳]') === 0; }).pop();
@@ -765,12 +783,16 @@ check('対象外にした件数を報告する',
 // --- 探索済みセルによる答え合わせ(APIコール0) ---
 // 予測が0件と言ったセルのうち探索済みのものは、Googleでの結果がシートに残っている。
 // コールを使う前にOSMの信頼度が分かる。
+// 0件を表すステータスは書かれた時代で違う(旧方式=グループA省略 / 現行=プレイスタイプ集合0件)。
+// 片方しか数えないと、通常経路を統一したあとに処理された行が丸ごと「外れ」に倒れるため、
+// 両方を混ぜた状態で的中率が正しく出ることを見る(Issue #38)。
 const A_ZERO = api.GRID_STATUS_EMPTY_BY_GROUP_A;
+const NEW_ZERO = api.GRID_STATUS_EMPTY;
 const accuracyCells = [
-  // Googleでも見つからなかった3セル = 予測が当たり
+  // Googleでも見つからなかった3セル = 予測が当たり(旧ステータス2件 + 現行ステータス1件)
   [api.OSM_EMPTY_GRID_IDS[0], 35.90, 140.10, 717, A_ZERO, 0, '', 0.01],
   [api.OSM_EMPTY_GRID_IDS[1], 35.90, 140.09, 717, A_ZERO, 0, '', 0.01],
-  [api.OSM_EMPTY_GRID_IDS[2], 35.90, 140.08, 717, A_ZERO, 0, '', 0.01],
+  [api.OSM_EMPTY_GRID_IDS[2], 35.90, 140.08, 717, NEW_ZERO, 0, '', 0.01],
   // Googleでは店が見つかった1セル = 予測が外れ
   [api.OSM_EMPTY_GRID_IDS[3], 35.90, 140.07, 717, '処理済み', 0, '', 0.01]
 ];
@@ -779,9 +801,12 @@ const accuracy = runSurvey({
 }, null);
 const accuracyLogs = accuracy.logs.join('\n');
 check('答え合わせにAPIコールを使わない', accuracy.requestCount() === 0, accuracy.requestCount() + '回');
-check('予測が当たったセル数を報告する',
+check('予測が当たったセル数を報告する(旧・現行どちらの0件ステータスも数える)',
   accuracyLogs.indexOf('Googleでも見つからなかった: 3セル') !== -1,
   accuracy.logs.filter(function(l) { return l.indexOf('見つからなかった') !== -1; })[0] || '(報告なし)');
+check('0件を表すステータスの一覧に旧・現行の両方が入っている',
+  api.GRID_EMPTY_STATUSES.indexOf(A_ZERO) !== -1 && api.GRID_EMPTY_STATUSES.indexOf(NEW_ZERO) !== -1,
+  JSON.stringify(api.GRID_EMPTY_STATUSES));
 check('予測が外れたセル数を報告する',
   accuracyLogs.indexOf('Googleでは店が見つかった  : 1セル') !== -1,
   accuracy.logs.filter(function(l) { return l.indexOf('見つかった  :') !== -1; })[0] || '(報告なし)');
