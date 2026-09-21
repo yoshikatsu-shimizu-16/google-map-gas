@@ -31,6 +31,10 @@
  *   - GASの実行時間上限(6分)に対応するため、4分30秒経過時点で安全停止する。
  *     未処理のグリッドが残っていれば、再実行することで続きから再開できる
  *     (「処理状況」列が完了ステータスの行はスキップされるため)。
+ *   - スクリプトプロパティ CRAWL_MAX_CALLS で、1回の実行で使ってよいコール数を
+ *     絞れる(lib/api/ApiCallBudget.js)。0 にすると「実行したら何コール要るか」を
+ *     報告するだけで、Googleへのリクエストは1件も出さない。月間上限が暴走を止める
+ *     最後の砦なのに対し、こちらは挙動を変えた直後に様子を見るための手綱。
  *   - Place ID をキーに重複除去を行う(隣接グリッド・親子分割の重複ヒットに対応)。
  *     シートへの書き込みはグリッド単位でまとめて行う(PlaceRowWriter)。
  *   - Demoキーの1日あたりのクォータ上限(RESOURCE_EXHAUSTED/429)や、自前の月間上限
@@ -55,6 +59,7 @@ function crawlAllGrids() {
 
     const scriptProps = PropertiesService.getScriptProperties();
     const apiKey = scriptProps.getProperty('GOOGLE_MAPS_API_KEY');
+    const maxCalls = readCrawlMaxCalls(scriptProps); // null なら上限なし
     const spreadsheetId = scriptProps.getProperty('TARGET_SPREADSHEET_ID');
     const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
 
@@ -133,12 +138,35 @@ function crawlAllGrids() {
       Logger.log('未処理のグリッドはありません。すべて完了済みのため、今回は何もせず終了します。');
       return;
     }
-    Logger.log('未処理のグリッド数: ' + remainingCount + '件。処理を開始します。');
 
+    // 試算モード: 知りたいのは「0コール」ではなく「実行したら何コール要るか」。
+    // 疎なセルなら1マス1コールなので、未処理のマス数が下限の目安になる
+    // (飽和したマスは子が増えるため、実際にはこれより多くなる)。
+    if (maxCalls === 0) {
+      Logger.log('未処理のグリッド数: ' + remainingCount + '件');
+      Logger.log('実行すれば最低 ' + remainingCount + ' コール消費します' +
+        '(1マス1コール。飽和したマスは子が増えるため、実際にはこれより多くなります)。');
+      Logger.log(CRAWL_MAX_CALLS_PROP + ' が 0 のため、ここで終了します。Googleへのリクエストは発生していません。');
+      Logger.log('実行するには ' + CRAWL_MAX_CALLS_PROP + ' を消すか、使ってよいコール数を設定してください。');
+      return;
+    }
+    Logger.log('未処理のグリッド数: ' + remainingCount + '件。処理を開始します。' +
+      (maxCalls === null ? '' : '(今回の上限: ' + maxCalls + 'コール)'));
+
+    let stoppedByBudget = false;
     for (let i = 0; i < gridValues.length; i++) {
       const row = gridValues[i];
       const status = row[GRID_COL_STATUS - 1];
       if (GRID_DONE_STATUSES.indexOf(status) !== -1) continue; // 完了済みのグリッドはスキップ
+
+      // 上限はセルを叩く前に見る。途中まで進んだ分の進捗は書き込み済みなので、
+      // 再実行すれば続きから再開できる。
+      if (maxCalls !== null && stats.totalCalls >= maxCalls) {
+        stoppedByBudget = true;
+        Logger.log(CRAWL_MAX_CALLS_PROP + '(' + maxCalls + 'コール)に達したため、ここで停止します。' +
+          '続きは再実行してください。');
+        break;
+      }
 
       if (new Date().getTime() - startTime > MAX_RUNTIME_MS) {
         Logger.log('実行時間の上限に近づいたため、ここで停止します。続きは再実行してください。');
@@ -218,6 +246,8 @@ function crawlAllGrids() {
     );
     if (quotaExceeded) {
       Logger.log('→ 利用上限により中断しました。上限がリセットされたら、同じ crawlAllGrids を再実行すれば続きから再開します。');
+    } else if (stoppedByBudget) {
+      Logger.log('→ ' + CRAWL_MAX_CALLS_PROP + ' により中断しました。もう一度 crawlAllGrids を実行すれば続きから再開します。');
     } else {
       Logger.log('未処理のグリッドが残っている場合は、もう一度 crawlAllGrids を実行してください。');
     }

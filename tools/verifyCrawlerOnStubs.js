@@ -95,7 +95,12 @@ const api = new Function(source + `
     childCellsOf: childCellsOf,
     CHILD_CELLS_PER_PARENT: CHILD_CELLS_PER_PARENT,
     auditGridOverlap: auditGridOverlap,
-    fixUnprocessedRootRadius: fixUnprocessedRootRadius
+    fixUnprocessedRootRadius: fixUnprocessedRootRadius,
+    CRAWL_MAX_CALLS_PROP: CRAWL_MAX_CALLS_PROP,
+    readCrawlMaxCalls: readCrawlMaxCalls,
+    readSurveyMaxCalls: readSurveyMaxCalls,
+    GRID_DONE_STATUSES: GRID_DONE_STATUSES,
+    GRID_COL_STATUS: GRID_COL_STATUS
   };
 `)();
 
@@ -1338,6 +1343,81 @@ const auditLogsAfterFix = overlapStub.logs.filter(function(l) { return l.indexOf
 check('修正後は不一致が1件(処理済みのBのみ)に減る',
   auditLogsAfterFix[auditLogsAfterFix.length - 1].indexOf('階層0セルの半径不一致: 1件') !== -1,
   auditLogsAfterFix[auditLogsAfterFix.length - 1]);
+
+// =====================================================================
+console.log('\n[16] 本番クロールの1実行あたりのコール上限(Issue #40)');
+// =====================================================================
+// 月間上限は暴走を止める最後の砦で、こちらは挙動を変えた直後に様子を見るための手綱。
+// 上限で止めても進捗は書き込み済みなので、再実行で続きから再開できることまで見る。
+const budgetRun = function(props) {
+  const s = installGasGlobals({
+    respondToSearch: function() {
+      return { places: [{ id: 'b_' + Math.random(), displayName: { text: '店' }, types: ['restaurant'] }] };
+    }
+  });
+  s.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+  s.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+  Object.keys(props || {}).forEach(function(k) { s.properties[k] = props[k]; });
+  const rows = [];
+  for (let i = 1; i <= 5; i++) rows.push([i, 35.80 + i * 0.01, 139.95, 717, '未処理', 0, '', api.GRID_STEP]);
+  s.sheets['グリッド一覧'] = createFakeSheet([api.GRID_SHEET_HEADERS.slice()].concat(rows));
+  const fn = new Function(source + 'return { crawlAllGrids: crawlAllGrids };')();
+  return { stub: s, run: fn.crawlAllGrids };
+};
+
+// --- 未設定なら従来どおり(上限なし) ---
+const noBudget = budgetRun(null);
+noBudget.run();
+check('CRAWL_MAX_CALLS が未設定なら従来どおり全セルを処理する',
+  noBudget.stub.requestCount() === 5, 'requestCount=' + noBudget.stub.requestCount());
+
+// --- 0 は試算モード ---
+const dryCrawl = budgetRun({ CRAWL_MAX_CALLS: '0' });
+dryCrawl.run();
+check('CRAWL_MAX_CALLS=0 ならGoogleへのリクエストが1件も発生しない',
+  dryCrawl.stub.requestCount() === 0, 'requestCount=' + dryCrawl.stub.requestCount());
+check('試算モードでも「実行したら何コール要るか」は報告する',
+  dryCrawl.stub.logs.some(function(l) { return l.indexOf('実行すれば最低 5 コール') !== -1; }),
+  dryCrawl.stub.logs.filter(function(l) { return l.indexOf('実行すれば') !== -1; })[0] || '(報告なし)');
+check('試算モードでは進捗を書き換えない',
+  dryCrawl.stub.sheets['グリッド一覧'].rows().slice(1).every(function(r) { return r[4] === '未処理'; }));
+
+// --- N で刻めて、再実行すると続きから再開する ---
+const crawlCapped = budgetRun({ CRAWL_MAX_CALLS: '2' });
+crawlCapped.run();
+check('CRAWL_MAX_CALLS で1回の実行を指定件数に抑えられる',
+  crawlCapped.stub.requestCount() === 2, 'requestCount=' + crawlCapped.stub.requestCount());
+check('上限で止めたことをログに残す',
+  crawlCapped.stub.logs.some(function(l) {
+    return l.indexOf(api.CRAWL_MAX_CALLS_PROP) !== -1 && l.indexOf('達したため') !== -1;
+  }));
+const doneAfterFirst = crawlCapped.stub.sheets['グリッド一覧'].rows().slice(1)
+  .filter(function(r) { return api.GRID_DONE_STATUSES.indexOf(r[4]) !== -1; }).length;
+check('上限で止めても、処理したぶんの進捗は残る', doneAfterFirst === 2, doneAfterFirst + '件が完了');
+
+crawlCapped.run(); // 2回目
+check('再実行すると続きから再開する(累計4コール)',
+  crawlCapped.stub.requestCount() === 4, 'requestCount=' + crawlCapped.stub.requestCount());
+crawlCapped.run(); // 3回目で残り1件
+check('3回目で全セルが完了する(累計5コール)',
+  crawlCapped.stub.requestCount() === 5 &&
+  crawlCapped.stub.sheets['グリッド一覧'].rows().slice(1).every(function(r) {
+    return api.GRID_DONE_STATUSES.indexOf(r[4]) !== -1;
+  }), 'requestCount=' + crawlCapped.stub.requestCount());
+
+// --- 不正値は上限なしに倒す(打ち間違いでクロールが丸ごと止まらないように) ---
+const badBudget = budgetRun({ CRAWL_MAX_CALLS: 'あ' });
+badBudget.run();
+check('不正な値は上限なしとして扱い、警告だけ出す',
+  badBudget.stub.requestCount() === 5 &&
+  badBudget.stub.logs.some(function(l) { return l.indexOf('の値が不正です') !== -1; }),
+  'requestCount=' + badBudget.stub.requestCount());
+
+// --- 調査側と本番側でプロパティが独立していること ---
+const surveyOnly = budgetRun({ SURVEY_MAX_CALLS: '0' });
+surveyOnly.run();
+check('SURVEY_MAX_CALLS は本番クロールに影響しない(枠を分けている意味がある)',
+  surveyOnly.stub.requestCount() === 5, 'requestCount=' + surveyOnly.stub.requestCount());
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);

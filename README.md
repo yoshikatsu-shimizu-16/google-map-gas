@@ -43,7 +43,7 @@ Google スプレッドシートに書き出す Google Apps Script (GAS) プロ�
 | `lib/crawler/TypeGroupCellSearch.js` | 内部ヘルパー | 1セルを頻度別グループ(A/B/C/D)で探索する手順。通常経路からは呼ばれないが、空間分割でも解決しない飽和マス向けに残している |
 | `entrypoints/auditPlaceTypeSetCoverage.js` | エントリーポイント | 「全飲食店データ」の実測値からプレイスタイプ集合の被覆率を判定(APIコール0) |
 | `entrypoints/comparePlaceTypeSetWithTypeGroups.js` | エントリーポイント | 複数セルでプレイスタイプ集合1コールと4グループの Place ID 差分を検証(**Pro段。営業用の枠を使わない**) |
-| `lib/survey/SurveyCallBudget.js` | 内部ヘルパー | 調査系が1回の実行で使ってよいコール数(`SURVEY_MAX_CALLS`)の読み取り |
+| `lib/api/ApiCallBudget.js` | 内部ヘルパー | 1回の実行で使ってよいコール数の読み取り(調査系は `SURVEY_MAX_CALLS`、本番は `CRAWL_MAX_CALLS`) |
 | `entrypoints/surveySaturatedCells.js` | エントリーポイント | 飽和マスを4分割して密度を測る。実行のたびに1段ずつ深く掘り、全域が20件未満に割れるまで繰り返す |
 | `entrypoints/surveyAllCells.js` | エントリーポイント | 全マスに1コールずつ投げ、密度とタイプの実態を Pro枠で洗い出す |
 | `lib/survey/EmptyCellPrediction.js` | データ(自動生成) | OSMが飲食店0件と見たグリッドIDの一覧。`npm run predict-empty` で再生成 |
@@ -164,6 +164,12 @@ Enterprise が `MONTHLY_API_CALL_COUNT`(運用中のカウントを引き継ぐ�
   **`0` にすると「実行したら何コール必要か」を報告するだけで、Googleへのリクエストは
   1件も発生しません**(請求先を紐付けたキーに切り替えた直後など、消費量を確定させて
   から実行したいときに使う)。未設定なら上限なし
+- `CRAWL_MAX_CALLS`(任意) — **`crawlAllGrids`(本番クロール)** で、1回の実行で使ってよい
+  コール数の上限。値の意味は `SURVEY_MAX_CALLS` と同じで、`0` は試算のみ・未設定は上限なし。
+  上限で止まっても進捗は書き込み済みなので、再実行すれば続きから再開します。
+  月間上限(1,000/月)が暴走を止める最後の砦なのに対し、こちらは**挙動を変えた直後に
+  様子を見るための手綱**です(調査系とプロパティを分けているのは、片方を止めたまま
+  もう片方を動かしたい場面があるため)
 - `PROBE_SURVEY_SAMPLE_SIZE`(任意、キー名は変更していません) — `comparePlaceTypeSetWithTypeGroups` が1回の実行で検証する
   セル数。未設定なら20。消費は1セルあたり、飽和なら1コール・判定できれば5コール(すべてPro段)
 

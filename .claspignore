@@ -24,7 +24,7 @@
 !lib/crawler/TypeGroupCellSearch.js
 !lib/crawler/PlaceTypeSetCellSearch.js
 !lib/survey/EmptyCellPrediction.js
-!lib/survey/SurveyCallBudget.js
+!lib/api/ApiCallBudget.js
 !entrypoints/surveyEmptyCells.js
 !entrypoints/surveyAllCells.js
 !entrypoints/surveySaturatedCells.js
