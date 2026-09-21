@@ -1586,6 +1586,7 @@ const harvestStub = installGasGlobals({
     if (Math.abs(lat - 35.80) < 0.0005) return { places: makeHarvestStubPlaces(5, 'g3') };
     if (Math.abs(lat - 35.81) < 0.0005) return { places: makeHarvestStubPlaces(3, 'g4') };
     if (Math.abs(lat - 35.82) < 0.0005) return { places: makeHarvestStubPlaces(2, 'g5') };
+    if (Math.abs(lat - 35.85) < 0.0005) return { places: makeHarvestStubPlaces(4, 'g8') };
     return { places: [] }; // 想定外の座標が来たら空(=このテストの他の期待値で検出できる)
   }
 });
@@ -1599,7 +1600,8 @@ harvestStub.sheets['グリッド一覧'] = createFakeSheet([
   [4, 35.81, 139.90, 717, '未処理', 0, '', api.GRID_STEP, 0],          // 調査に無い → 通常どおり収穫
   [5, 35.82, 139.90, 717, '未処理', 0, '', api.GRID_STEP, 0],          // 調査はあるが座標不一致 → 適用しない
   [6, 35.83, 139.90, 717, '未処理', api.MAX_TIER, '', api.GRID_STEP, 0], // 調査: 飽和・既にMAX_TIER → 子は作らず要確認へ
-  [7, 35.84, 139.90, 717, '処理済み(プローブ)', 0, '', api.GRID_STEP, 0] // 調査: 0件だが既に処理済み → 触らないはず
+  [7, 35.84, 139.90, 717, '処理済み(プローブ)', 0, '', api.GRID_STEP, 0], // 調査: 0件だが既に処理済み → 触らないはず
+  [8, 35.85, 139.90, 717, '未処理', 0, '', api.GRID_STEP, 0]           // 調査: 0件だが調査時の半径700m<現在717m → 適用しない
 ]);
 const surveyCellSheetForHarvest = createFakeSheet([
   api.AREA_SURVEY_CELL_HEADERS,
@@ -1608,7 +1610,8 @@ const surveyCellSheetForHarvest = createFakeSheet([
   [3, 35.80, 139.90, 717, 0, 5, '', new Date()],
   [5, 35.90, 139.90, 717, 0, 20, '飽和(20件以上)', new Date()], // 中心緯度がグリッド一覧側(35.82)と食い違う
   [6, 35.83, 139.90, 717, api.MAX_TIER, 20, '飽和(20件以上)', new Date()],
-  [7, 35.84, 139.90, 717, 0, 0, '', new Date()]
+  [7, 35.84, 139.90, 717, 0, 0, '', new Date()],
+  [8, 35.85, 139.90, 700, 0, 0, '', new Date()] // 調査時は半径700m。現在の717mより狭い(拡張分は未調査)
 ]);
 harvestStub.sheets['調査(マス)'] = surveyCellSheetForHarvest;
 
@@ -1635,9 +1638,12 @@ check('既にMAX_TIERで飽和と分かっているセルは、子を作らず�
   harvestRowById(6)[4] === '要確認(上限到達)', '処理状況=' + harvestRowById(6)[4]);
 check('既に処理済みのセルは、調査結果が0件でも書き換えない',
   harvestRowById(7)[4] === '処理済み(プローブ)', '処理状況=' + harvestRowById(7)[4]);
+check('0件の調査でも、調査時より現在の検索範囲が広いセルには適用せず実際に検索する' +
+  '(拡張分の環状部分を検索せず完了扱いにする欠落を防ぐ)',
+  harvestRowById(8)[4] === '処理済み(プローブ)', '処理状況=' + harvestRowById(8)[4]);
 
-check('実際にAPIコールが発生したのは通常収穫の3セルだけ(0件・飽和・要確認セルはコール0)',
-  harvestStub.requestCount() === 3, 'requestCount=' + harvestStub.requestCount());
+check('実際にAPIコールが発生したのは通常収穫の4セルだけ(0件・飽和・要確認セルはコール0)',
+  harvestStub.requestCount() === 4, 'requestCount=' + harvestStub.requestCount());
 
 check('適用結果をログに残す(0件1件・飽和2件)',
   harvestStub.logs.some(function(l) {
@@ -1645,6 +1651,34 @@ check('適用結果をログに残す(0件1件・飽和2件)',
   }));
 check('座標不一致で適用しなかったこともログに残す',
   harvestStub.logs.some(function(l) { return l.indexOf('座標が一致しないため適用しなかったセル: 1件') !== -1; }));
+check('検索範囲が広がったため適用しなかったこともログに残す',
+  harvestStub.logs.some(function(l) { return l.indexOf('検索範囲が広がっているため適用しなかったセル: 1件') !== -1; }));
+
+// --- 試算モード(CRAWL_MAX_CALLS=0)では、調査結果の適用も含めて一切書き換えないこと ---
+const harvestDryRunStub = installGasGlobals({
+  respondToSearch: function() { return { places: makeHarvestStubPlaces(20, 'dry') }; }
+});
+harvestDryRunStub.properties['GOOGLE_MAPS_API_KEY'] = 'stub-key';
+harvestDryRunStub.properties['TARGET_SPREADSHEET_ID'] = 'stub-spreadsheet-id';
+harvestDryRunStub.properties['CRAWL_MAX_CALLS'] = '0';
+harvestDryRunStub.sheets['グリッド一覧'] = createFakeSheet([
+  api.GRID_SHEET_HEADERS.slice(),
+  [1, 35.78, 139.90, 717, '未処理', 0, '', api.GRID_STEP, 0], // 調査上は0件、飽和セルも用意する
+  [2, 35.79, 139.90, 717, '未処理', 0, '', api.GRID_STEP, 0]
+]);
+harvestDryRunStub.sheets['調査(マス)'] = createFakeSheet([
+  api.AREA_SURVEY_CELL_HEADERS,
+  [1, 35.78, 139.90, 717, 0, 0, '', new Date()],
+  [2, 35.79, 139.90, 717, 0, 20, '飽和(20件以上)', new Date()]
+]);
+new Function(source + 'return { crawlAllGrids: crawlAllGrids };')().crawlAllGrids();
+const dryRunGrid = harvestDryRunStub.sheets['グリッド一覧'].rows();
+check('試算モードでは調査結果があっても進捗を書き換えない(0件セルも飽和セルも未処理のまま)',
+  dryRunGrid.slice(1).every(function(r) { return r[4] === '未処理'; }),
+  JSON.stringify(dryRunGrid.slice(1).map(function(r) { return r[4]; })));
+check('試算モードでは子グリッドも生成しない', dryRunGrid.length - 1 === 2, (dryRunGrid.length - 1) + '件');
+check('試算モードではGoogleへのリクエストが発生しない',
+  harvestDryRunStub.requestCount() === 0, 'requestCount=' + harvestDryRunStub.requestCount());
 
 console.log('\n' + (failures === 0 ? '✅ すべて通過' : '❌ ' + failures + ' 件失敗') + '\n');
 process.exit(failures === 0 ? 0 : 1);

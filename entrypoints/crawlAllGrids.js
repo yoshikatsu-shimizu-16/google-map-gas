@@ -52,7 +52,9 @@
  *   - 「調査(マス)」(surveyAllCells が Pro段で調べた既知の結果)があれば、未処理行に
  *     適用して答えが分かっているコールを省く(lib/survey/SurveyFindingsHarvest.js)。
  *     0件だったマスはコールせず完了扱いにし、飽和だったマスは親のコールを省いて
- *     いきなり子を生成する。座標が一致しない行(生成条件が変わった疑い)には適用しない。
+ *     いきなり子を生成する。座標が一致しない行や、0件のマスで調査時より現在の
+ *     検索範囲が広がっている行(生成条件が変わった疑い)には適用しない。
+ *     CRAWL_MAX_CALLS=0(試算モード)ではシートを書き換えないため、この適用も行わない。
  *
  * @returns {void}
  */
@@ -115,7 +117,9 @@ function crawlAllGrids() {
 
     // --- 調査結果を適用し、答えが分かっているコールを省く(Issue #39) ---
     // gridValues は参照渡しなので、書き換えた行のステータスはこの場でも更新される。
-    const surveyCellSheet = spreadsheet.getSheetByName('調査(マス)');
+    // 試算モード(maxCalls===0、下記)は「進捗を書き換えない」ことが約束のため、
+    // この適用も行わない(適用そのものがシートへの書き込みを伴うため)。
+    const surveyCellSheet = maxCalls === 0 ? null : spreadsheet.getSheetByName('調査(マス)');
     if (surveyCellSheet) {
       const harvest = applySurveyFindingsToUnprocessedGrids(
         gridSheet, gridValues, readSurveyCellFindings(surveyCellSheet), nextGridId);
@@ -131,6 +135,12 @@ function crawlAllGrids() {
         Logger.log(
           '調査結果はあるが座標が一致しないため適用しなかったセル: ' +
           harvest.shapeMismatchSkipped + '件(生成条件が変わった可能性があるため、通常どおり検索します)'
+        );
+      }
+      if (harvest.emptyCoverageGrewSkipped > 0) {
+        Logger.log(
+          '調査結果はあるが調査時より検索範囲が広がっているため適用しなかったセル: ' +
+          harvest.emptyCoverageGrewSkipped + '件(広がった分は未調査のため、通常どおり検索します)'
         );
       }
     }
