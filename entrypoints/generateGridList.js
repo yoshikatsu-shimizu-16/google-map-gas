@@ -6,8 +6,8 @@
  * このシートは crawlAllGrids が読み込み、1行(1グリッド)につき1回 searchNearby を
  * 呼び出すための「座標のリスト兼進捗管理台帳」として使われる。
  * 「処理状況」列は初期値として全行 '未処理' になり、crawlAllGrids 側で
- * '処理済み' / 'エラー' / '密集(タイプ分割済み)' / '密集(分割済み)' / '要確認(上限到達)' /
- * '処理済み(A=0のため省略)' に更新される。
+ * '処理済み' / 'エラー' / '要確認(エラー継続)' / '密集(タイプ分割済み)' / '密集(分割済み)' /
+ * '要確認(上限到達)' / '処理済み(A=0のため省略)' に更新される。
  *
  * 検索半径はここでは決め打ちせず、セルサイズと中心緯度から cellCoverRadiusMeters で
  * 導出する。「半径(m)」列は生成時に確定した実際の検索半径であり、
@@ -63,7 +63,8 @@ function generateGridList() {
       const centerLat = lat + gridStep / 2;
       const centerLng = lng + gridStep / 2;
       const radius = cellCoverRadiusMeters(gridStep, centerLat);
-      rows.push([gridId, centerLat, centerLng, radius, '未処理', 0, '', gridStep]); // 階層0=元グリッド
+      // 階層0=元グリッド。末尾の0はエラー回数(まだ1回も失敗していない)。
+      rows.push([gridId, centerLat, centerLng, radius, '未処理', 0, '', gridStep, 0]);
       gridId++;
     }
   }

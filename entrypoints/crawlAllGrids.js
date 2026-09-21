@@ -33,6 +33,12 @@
  *     (「処理状況」列が完了ステータスの行はスキップされるため)。
  *   - Place ID をキーに重複除去を行う(隣接グリッド・親子分割の重複ヒットに対応)。
  *     シートへの書き込みはグリッド単位でまとめて行う(PlaceRowWriter)。
+ *   - 検索に失敗したセルは「エラー」にして完了扱いにしないため、次回の実行で自動的に
+ *     再試行される。ただし回数を数えており、MAX_GRID_ERROR_RETRIES 回連続で失敗したら
+ *     「要確認(エラー継続)」に倒して再試行を打ち切る(lib/crawler/GridErrorRetryPolicy.js)。
+ *     打ち切らないと、恒久的に失敗する行を日次トリガーのたびに叩き続けることになり、
+ *     しかもクォータ起因でないエラーは自前カウンタから返却されないため、
+ *     壊れた行1つにつき毎日1コールずつ無料枠が減る。
  *   - Demoキーの1日あたりのクォータ上限(RESOURCE_EXHAUSTED/429)や、自前の月間上限
  *     (checkAndIncrementApiQuota)を検知した場合は、個別グリッドのエラーとして無視せず、
  *     ループ全体を即座に中断する。このとき「処理状況」は更新されないため、
@@ -93,6 +99,8 @@ function crawlAllGrids() {
     let newRowsCount = 0;
     let denseSplitCount = 0;
     let needsReviewCount = 0;
+    let errorCount = 0;          // 今回失敗し、次回また再試行するグリッド数
+    let errorExhaustedCount = 0; // 再試行の上限に達し、自動での再試行を打ち切ったグリッド数
     let nextGridId = gridValues.reduce(function(max, r) { return Math.max(max, r[0]); }, 0) + 1;
     let quotaExceeded = false;
 
@@ -182,7 +190,21 @@ function crawlAllGrids() {
           needsReviewCount++;
         }
       } else if (result.hadFailure) {
-        gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('エラー');
+        // 一時的な障害なら次回の実行で拾い直したいので完了にはしない。ただし回数を数え、
+        // 上限に達したら完了扱いのステータスへ倒して再試行を打ち切る
+        // (lib/crawler/GridErrorRetryPolicy.js を参照)。
+        const nextState = nextStateAfterGridError(row[GRID_COL_ERROR_COUNT - 1]);
+        gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue(nextState.status);
+        gridSheet.getRange(i + 2, GRID_COL_ERROR_COUNT).setValue(nextState.errorCount);
+        if (nextState.exhausted) {
+          errorExhaustedCount++;
+          Logger.log(
+            'グリッド ' + gridId + ' は ' + nextState.errorCount +
+            '回連続で失敗したため、自動での再試行を打ち切りました(' + nextState.status + ')。'
+          );
+        } else {
+          errorCount++;
+        }
       } else {
         gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('処理済み(プローブ)');
         processedCount++;
@@ -204,6 +226,8 @@ function crawlAllGrids() {
       '今回処理したグリッド数: ' + processedCount +
       ' / 密集で子グリッド生成: ' + denseSplitCount +
       ' / 要確認(上限到達): ' + needsReviewCount +
+      ' / エラー(次回再試行): ' + errorCount +
+      ' / 要確認(エラー継続): ' + errorExhaustedCount +
       ' / 新規追加件数: ' + newRowsCount +
       ' / APIコール回数: ' + stats.totalCalls +
       ' / 累計件数: ' + (finalLastRow - 1)
