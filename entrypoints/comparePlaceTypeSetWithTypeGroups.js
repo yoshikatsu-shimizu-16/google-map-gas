@@ -133,7 +133,7 @@ function compareOneCell(apiKey, cell) {
     return { status: 'エラー', placeTypeSetCount: 0, unionCount: 0, missed: [],
       quotaExceeded: placeTypeSetResult.quotaExceeded, note: placeTypeSetResult.errorText.slice(0, 200) };
   }
-  if (placeTypeSetResult.places.length >= 20) {
+  if (placeTypeSetResult.places.length >= MAX_RESULT_COUNT) {
     // 20件ちょうど = 切り捨てられている。U も同じく切り捨てられるので差分の意味が読めない。
     return { status: '飽和のため判定不能', placeTypeSetCount: placeTypeSetResult.places.length, unionCount: 0,
       missed: [], quotaExceeded: false, note: 'プレイスタイプ集合の検索が20件に達したため比較を打ち切り(消費1コール)' };
