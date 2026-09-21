@@ -206,7 +206,11 @@ function crawlAllGrids() {
           errorCount++;
         }
       } else {
-        gridSheet.getRange(i + 2, GRID_COL_STATUS).setValue('処理済み(プローブ)');
+        // 0件だったセルは別のステータスで残す。1〜19件と同じにまとめてしまうと、
+        // 1コール払って得た「ここには店が無い」という情報がシートに残らない
+        // (lib/grid/GridSchemaMigration.js の GRID_STATUS_EMPTY を参照)。
+        gridSheet.getRange(i + 2, GRID_COL_STATUS)
+          .setValue(result.placeTypeSetEmpty ? GRID_STATUS_EMPTY : '処理済み(プローブ)');
         processedCount++;
       }
     }

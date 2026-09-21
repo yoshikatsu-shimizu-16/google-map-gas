@@ -183,12 +183,15 @@ function surveyEmptyCells() {
  * 既にクロール済みのセルを使って、OSMの予測がどれだけ当たっていたかを報告する(APIコール0)。
  *
  * 予測が0件と言ったセルのうち探索済みのものは、Googleでの結果がシートに残っている。
- * ステータスが GRID_STATUS_EMPTY_BY_GROUP_A なら「Googleでも見つからなかった」で予測が当たり、
- * それ以外のステータスなら店が見つかっていたので外れ。
+ * ステータスが GRID_EMPTY_STATUSES のいずれかなら「Googleでも見つからなかった」で
+ * 予測が当たり、それ以外のステータスなら店が見つかっていたので外れ。
  *
- * 注意: GRID_STATUS_EMPTY_BY_GROUP_A は「グループA(頻出39種)が0件」という意味で、
- * B/C/Dは省略されている。稀なタイプだけの店がある可能性は残るため、的中率は
- * やや甘めに出る。それでも「OSMがまったく当てにならない」かどうかの判断には使える。
+ * 注意: 0件を表すステータスは書かれた時代で意味が違う。
+ *   GRID_STATUS_EMPTY_BY_GROUP_A … 旧方式で「グループA(頻出39種)が0件」。B/C/Dは
+ *     省略されているため、稀なタイプだけの店が残っている可能性があり、的中率は甘めに出る
+ *   GRID_STATUS_EMPTY … 現行のプレイスタイプ集合(傘型36種)1コールで0件。こちらは
+ *     稀タイプも傘で覆っているため、より確度が高い
+ * どちらにせよ「OSMがまったく当てにならない」かどうかの判断には使える。
  *
  * @param {Object<string, number>} doneStatusCounts - 探索済みセルのステータス別件数
  * @param {number} skippedDone - 探索済みセルの総数
@@ -197,7 +200,12 @@ function surveyEmptyCells() {
 function reportPredictionAccuracyFromExploredCells(doneStatusCounts, skippedDone) {
   if (skippedDone === 0) return;
 
-  const agreed = doneStatusCounts[GRID_STATUS_EMPTY_BY_GROUP_A] || 0;
+  // 「Googleでも見つからなかった」を表すステータスは時代によって違う。
+  // 旧方式=グループA省略、現行=プレイスタイプ集合0件。片方しか数えないと、
+  // 通常経路を統一したあとに処理された行が丸ごと「予測が外れ」に倒れる。
+  const agreed = GRID_EMPTY_STATUSES.reduce(function(sum, status) {
+    return sum + (doneStatusCounts[status] || 0);
+  }, 0);
   const disagreed = skippedDone - agreed;
   Logger.log('  [答え合わせ(APIコール0)] 探索済みの' + skippedDone + 'セルでOSMの予測を検証:');
   Logger.log('    Googleでも見つからなかった: ' + agreed + 'セル(予測が当たり)');
