@@ -133,7 +133,7 @@ function surveyAllCells() {
     }
 
     const found = result.places.length;
-    const saturated = found >= 20;
+    const saturated = found >= MAX_RESULT_COUNT;
     surveyed++;
     placesFound += found;
     if (found === 0) empty++;
